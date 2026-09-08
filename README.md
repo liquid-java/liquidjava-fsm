@@ -3,16 +3,6 @@
 LiquidJava state machine parser used by the VS Code language server and MCP server.
 Depends on the verifier and Spoon.
 
-## Maven dependency
-
-```xml
-<dependency>
-  <groupId>io.github.liquid-java</groupId>
-  <artifactId>liquidjava-fsm</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
-</dependency>
-```
-
 ## Example
 
 ### Source File
@@ -78,4 +68,23 @@ StateMachine stateMachine = StateMachineParser.parse(path.toUri().toString());
     }
   ]
 }
+```
+
+## Maven dependency
+
+```xml
+<dependency>
+  <groupId>io.github.liquid-java</groupId>
+  <artifactId>liquidjava-fsm</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+</dependency>
+```
+
+## Release
+
+Releases are published to Maven Central by GitHub Actions when a `v*`
+tag is pushed to `main` that is created using the `release.sh` script:
+
+```bash
+./release.sh
 ```
