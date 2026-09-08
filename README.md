@@ -1,7 +1,7 @@
 # LiquidJava FSM
 
-LiquidJava state machine parser used by the VS Code language server and MCP server.
-Depends on the verifier and Spoon.
+LiquidJava state machine parser used by the LiquidJava VS Code language server and MCP server.
+Depends on the LiquidJava verifier.
 
 ## Example
 
@@ -76,7 +76,7 @@ StateMachine stateMachine = StateMachineParser.parse(path.toUri().toString());
 <dependency>
   <groupId>io.github.liquid-java</groupId>
   <artifactId>liquidjava-fsm</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.1.0</version>
 </dependency>
 ```
 
