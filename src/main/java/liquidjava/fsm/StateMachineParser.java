@@ -15,6 +15,7 @@ import spoon.reflect.CtModel;
 import spoon.reflect.declaration.CtAnnotation;
 import spoon.reflect.declaration.CtClass;
 import spoon.reflect.declaration.CtElement;
+import spoon.reflect.declaration.CtExecutable;
 import spoon.reflect.declaration.CtMethod;
 import spoon.reflect.declaration.CtType;
 import spoon.reflect.cu.SourcePosition;
@@ -67,7 +68,7 @@ public class StateMachineParser {
             // get initial transitions and method transitions
             List<StateMachineInitialTransition> initialTransitions = getInitialTransitions(ctType, simpleClassName, states);
             if (initialTransitions.isEmpty()) {
-                initialTransitions = List.of(new StateMachineInitialTransition(states.get(0)));
+                initialTransitions = getDefaultInitialTransitions(ctType, simpleClassName, states.get(0));
             }
             List<StateMachineTransition> transitions = getTransitions(ctType, simpleClassName, states);
             if (transitions.isEmpty())
@@ -168,7 +169,7 @@ public class StateMachineParser {
      * @param className the class name
      * @return collection of constructor elements
      */
-    private static Collection<? extends CtElement> getConstructorElements(CtType<?> ctType, String className) {
+    private static Collection<? extends CtExecutable<?>> getConstructorElements(CtType<?> ctType, String className) {
         if (ctType instanceof CtClass<?> ctClass) {
             return ctClass.getConstructors();
         }
@@ -186,15 +187,41 @@ public class StateMachineParser {
      */
     private static List<StateMachineInitialTransition> getInitialTransitions(CtType<?> ctType, String className, List<String> states) {
         List<StateMachineInitialTransition> initialTransitions = new ArrayList<>();
-        for (CtElement element : getConstructorElements(ctType, className)) {
+        for (CtExecutable<?> element : getConstructorElements(ctType, className)) {
+            String signature = getConstructorSignature(element, className);
+            boolean hasExplicitInitialState = false;
             for (CtAnnotation<?> annotation : element.getAnnotations()) {
                 if (annotation.getAnnotationType().getSimpleName().equals(STATE_REFINEMENT_ANNOTATION)) {
                     String to = annotation.getValueAsString("to");
-                    initialTransitions.addAll(parseInitialTransitions(to, states));
+                    List<StateMachineInitialTransition> transitions = parseInitialTransitions(to, states, signature);
+                    initialTransitions.addAll(transitions);
+                    hasExplicitInitialState |= !transitions.isEmpty();
                 }
+            }
+            if (!hasExplicitInitialState) {
+                initialTransitions.add(new StateMachineInitialTransition(states.get(0), null, signature));
             }
         }
         return initialTransitions;
+    }
+
+    private static List<StateMachineInitialTransition> getDefaultInitialTransitions(CtType<?> ctType,
+            String className, String firstState) {
+        Collection<? extends CtExecutable<?>> constructors = getConstructorElements(ctType, className);
+        if (constructors.isEmpty()) {
+            String implicitConstructor = ctType instanceof CtClass<?> ? "new " + className + "()" : null;
+            return List.of(new StateMachineInitialTransition(firstState, null, implicitConstructor));
+        }
+        return constructors.stream()
+                .map(element -> new StateMachineInitialTransition(firstState, null,
+                        getConstructorSignature(element, className)))
+                .toList();
+    }
+
+    private static String getConstructorSignature(CtExecutable<?> element, String className) {
+        return "new " + className + "(" + String.join(", ", element.getParameters().stream()
+                .map(parameter -> parameter.getType() == null ? "?" : parameter.getType().getSimpleName())
+                .toList()) + ")";
     }
 
     /**
@@ -382,11 +409,12 @@ public class StateMachineParser {
         return "!(" + condition + ")";
     }
 
-    private static List<StateMachineInitialTransition> parseInitialTransitions(String expr, List<String> states) {
+    private static List<StateMachineInitialTransition> parseInitialTransitions(String expr, List<String> states,
+            String constructorSignature) {
         if (expr == null || expr.isEmpty()) return new ArrayList<>();
         List<StateMachineInitialTransition> initialTransitions = new ArrayList<>();
         for (TransitionSource source : parsePostcondition(expr, states)) {
-            initialTransitions.add(new StateMachineInitialTransition(source.from(), source.cond()));
+            initialTransitions.add(new StateMachineInitialTransition(source.from(), source.cond(), constructorSignature));
         }
         return initialTransitions;
     }

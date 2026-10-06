@@ -91,6 +91,29 @@ public class StateMachineParserTests {
                 List.of(new StateMachineInitialTransition("uninitialized"),
                         new StateMachineInitialTransition("initialized")));
         assertStateMachineEquals(expectedSm, sm);
+        assertEquals(List.of("new MultipleInitialStates()", "new MultipleInitialStates(int)"),
+                sm.initialTransitions().stream().map(StateMachineInitialTransition::constructorSignature).toList());
+    }
+
+    @Test
+    public void testOverloadedConstructorsLeadingToSameState() {
+        StateMachine sm = StateMachineParser.parse(uri("SameInitialState.java"));
+        assertNotNull(sm);
+        assertEquals(List.of("ready", "ready", "ready"),
+                sm.initialTransitions().stream().map(StateMachineInitialTransition::to).toList());
+        assertEquals(List.of("new SameInitialState()", "new SameInitialState(int, boolean)",
+                        "new SameInitialState(String)"),
+                sm.initialTransitions().stream().map(StateMachineInitialTransition::constructorSignature).toList());
+    }
+
+    @Test
+    public void testUnannotatedConstructorsUseDefaultState() {
+        StateMachine sm = StateMachineParser.parse(uri("DefaultInitialState.java"));
+        assertNotNull(sm);
+        assertEquals(List.of("ready", "ready"),
+                sm.initialTransitions().stream().map(StateMachineInitialTransition::to).toList());
+        assertEquals(List.of("new DefaultInitialState()", "new DefaultInitialState(int)"),
+                sm.initialTransitions().stream().map(StateMachineInitialTransition::constructorSignature).toList());
     }
 
     @Test
@@ -101,6 +124,7 @@ public class StateMachineParserTests {
                 List.of(new StateMachineTransition("disconnected", "connected", "connect")),
                 List.of(new StateMachineInitialTransition("disconnected")));
         assertStateMachineEquals(expectedSm, sm);
+        assertEquals("new Connection()", sm.initialTransitions().get(0).constructorSignature());
     }
 
     @Test
@@ -113,6 +137,8 @@ public class StateMachineParserTests {
                 List.of(new StateMachineInitialTransition("on", "flag"),
                         new StateMachineInitialTransition("off", "!flag")));
         assertStateMachineEquals(expectedSm, sm);
+        assertEquals(List.of("new ConditionalTransition(boolean)", "new ConditionalTransition(boolean)"),
+                sm.initialTransitions().stream().map(StateMachineInitialTransition::constructorSignature).toList());
     }
 
     @Test
@@ -203,7 +229,9 @@ public class StateMachineParserTests {
     private static void assertStateMachineEquals(StateMachine expected, StateMachine actual) {
         assertNotNull(actual, "State machine should not be null");
         assertEquals(expected.className(), actual.className(), "Class names should match");
-        assertEquals(expected.initialTransitions(), actual.initialTransitions(), "Initial transitions should match");
+        assertEquals(expected.initialTransitions(), actual.initialTransitions().stream()
+                .map(transition -> new StateMachineInitialTransition(transition.to(), transition.toCondition()))
+                .toList(), "Initial transitions should match");
         assertEquals(expected.states(), actual.states(), "States should match");
         assertEquals(expected.transitions(), actual.transitions(), "State transitions should match");
         assertEquals(expected.errorContext(), actual.errorContext(), "Error contexts should match");
