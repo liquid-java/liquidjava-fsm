@@ -24,6 +24,7 @@ public class StateMachineParser {
 
     private static final String STATE_SET_ANNOTATION = "StateSet";
     private static final String STATE_REFINEMENT_ANNOTATION = "StateRefinement";
+    private static final String REFINEMENT_ANNOTATION = "Refinement";
     private static final String EXTERNAL_REFINEMENTS_FOR_ANNOTATION = "ExternalRefinementsFor";
 
     private record TransitionSource(String from, String cond) {}
@@ -66,10 +67,14 @@ public class StateMachineParser {
             String simpleClassName = Utils.getSimpleName(className);
 
             // get initial transitions and method transitions
+            List<StateMachineInitialTransition> factoryTransitions = getFactoryTransitions(ctType, simpleClassName, states);
             List<StateMachineInitialTransition> initialTransitions = getInitialTransitions(ctType, simpleClassName, states);
-            if (initialTransitions.isEmpty()) {
+            // interfaces only have an implicit initial state when there are no factory methods
+            if (initialTransitions.isEmpty() && (ctType instanceof CtClass<?> || factoryTransitions.isEmpty())) {
                 initialTransitions = getDefaultInitialTransitions(ctType, simpleClassName, states.get(0));
             }
+            initialTransitions = new ArrayList<>(initialTransitions);
+            initialTransitions.addAll(factoryTransitions);
             List<StateMachineTransition> transitions = getTransitions(ctType, simpleClassName, states);
             if (transitions.isEmpty())
                 return null; // no transitions found
@@ -219,9 +224,39 @@ public class StateMachineParser {
     }
 
     private static String getConstructorSignature(CtExecutable<?> element, String className) {
-        return "new " + className + "(" + String.join(", ", element.getParameters().stream()
+        return "new " + className + "(" + getParameterTypes(element) + ")";
+    }
+
+    /**
+     * Gets the initial transitions from static factory methods (methods that return a new object in a given state)
+     * For classes these must be static, for interfaces any method returning the class type is considered
+     * @param ctType the CtType (class or interface)
+     * @param className the class name
+     * @param states the list of states
+     * @return initial transitions
+     */
+    private static List<StateMachineInitialTransition> getFactoryTransitions(CtType<?> ctType, String className, List<String> states) {
+        List<StateMachineInitialTransition> initialTransitions = new ArrayList<>();
+        for (CtMethod<?> method : ctType.getMethods()) {
+            if (ctType.isClass() && !method.isStatic())
+                continue;
+            if (method.getType() == null || !method.getType().getSimpleName().equals(className))
+                continue;
+            String signature = className + "." + method.getSimpleName() + "(" + getParameterTypes(method) + ")";
+            for (CtAnnotation<?> annotation : method.getAnnotations()) {
+                if (annotation.getAnnotationType().getSimpleName().equals(REFINEMENT_ANNOTATION)) {
+                    String refinement = annotation.getValueAsString("value");
+                    initialTransitions.addAll(parseInitialTransitions(refinement, states, signature));
+                }
+            }
+        }
+        return initialTransitions;
+    }
+
+    private static String getParameterTypes(CtExecutable<?> element) {
+        return String.join(", ", element.getParameters().stream()
                 .map(parameter -> parameter.getType() == null ? "?" : parameter.getType().getSimpleName())
-                .toList()) + ")";
+                .toList());
     }
 
     /**

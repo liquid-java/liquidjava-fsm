@@ -226,6 +226,47 @@ public class StateMachineParserTests {
         assertStateMachineEquals(expectedSm, sm);
     }
 
+    @Test
+    public void testStaticFactoryMethods() {
+        // static methods returning the class are initial transitions
+        StateMachine sm = StateMachineParser.parse(uri("StaticFactory.java"));
+        StateMachine expectedSm = stateMachine("StaticFactory", List.of("open", "closed"),
+                List.of(new StateMachineTransition("open", "closed", "close")),
+                List.of(new StateMachineInitialTransition("open"),
+                        new StateMachineInitialTransition("closed"),
+                        new StateMachineInitialTransition("open", "flag"),
+                        new StateMachineInitialTransition("closed", "!flag")));
+        assertStateMachineEquals(expectedSm, sm);
+        assertEquals(List.of("new StaticFactory()", "StaticFactory.closedInstance()",
+                        "StaticFactory.of(boolean)", "StaticFactory.of(boolean)"),
+                sm.initialTransitions().stream().map(StateMachineInitialTransition::constructorSignature).toList());
+    }
+
+    @Test
+    public void testExternalStaticFactoryMethods() {
+        // in interfaces any method returning the class is a factory method
+        StateMachine sm = StateMachineParser.parse(uri("ExternalStaticFactory.java"));
+        StateMachine expectedSm = stateMachine("java.util.UUID",
+                List.of("dceSecurityNameRandom", "maybeTime", "timeBased"),
+                List.of(new StateMachineTransition("timeBased", "timeBased", "timestamp")),
+                List.of(new StateMachineInitialTransition("timeBased", "mostSigBits / 4096 % 16 == 1"),
+                        new StateMachineInitialTransition("dceSecurityNameRandom", "!(mostSigBits / 4096 % 16 == 1)"),
+                        new StateMachineInitialTransition("maybeTime"),
+                        new StateMachineInitialTransition("dceSecurityNameRandom")));
+        assertStateMachineEquals(expectedSm, sm);
+        assertEquals(List.of("new UUID(long, long)", "new UUID(long, long)", "UUID.fromString(String)",
+                        "UUID.randomUUID()"),
+                sm.initialTransitions().stream().map(StateMachineInitialTransition::constructorSignature).toList());
+    }
+
+    @Test
+    public void testExternalFactoryWithoutConstructorHasNoDefaultInitialState() {
+        StateMachine sm = StateMachineParser.parse(uri("ExternalFactoryOnly.java"));
+        assertNotNull(sm);
+        assertEquals(List.of(new StateMachineInitialTransition("timeBased", null, "UUID.fromString(String)")),
+                sm.initialTransitions());
+    }
+
     private static void assertStateMachineEquals(StateMachine expected, StateMachine actual) {
         assertNotNull(actual, "State machine should not be null");
         assertEquals(expected.className(), actual.className(), "Class names should match");
