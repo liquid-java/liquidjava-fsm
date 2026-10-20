@@ -3,10 +3,23 @@ package liquidjava.fsm;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
+import java.io.File;
 import java.nio.file.Path;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
+
+import liquidjava.api.CommandLineLauncher;
+import liquidjava.diagnostics.Diagnostics;
+import liquidjava.diagnostics.errors.StateRefinementError;
+import liquidjava.processor.VCImplication;
+import liquidjava.rj_language.Predicate;
+import liquidjava.rj_language.parsing.RefinementsParser;
+import spoon.Launcher;
+import spoon.reflect.cu.SourcePosition;
+import spoon.reflect.declaration.CtClass;
+import spoon.reflect.declaration.CtType;
+import spoon.reflect.reference.CtTypeReference;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
@@ -32,7 +45,7 @@ public class StateMachineParserTests {
     @Test
     public void testStateMachineGroupsErrorContext() {
         StateMachineErrorContext errorContext = new StateMachineErrorContext(
-                "read", List.of("closed"));
+                "read", List.of("closed"), "file", List.of("open"), "open(file)", "closed(file)", "closed");
         StateMachine sm = new StateMachine("Simple", List.of("open", "closed"), List.of(), List.of(), errorContext);
 
         assertEquals(errorContext, sm.errorContext());
@@ -267,6 +280,94 @@ public class StateMachineParserTests {
                 sm.initialTransitions());
     }
 
+    @Test
+    public void testErrorContextForRejectedCall() {
+        // root.getFirstChild() after add and removeAllChildren
+        StateRefinementError error = verifyStateError("errors/tree", "root");
+        StateMachine sm = parseWithErrorContext(error);
+        assertNotNull(sm);
+        assertEquals(new StateMachineErrorContext("getFirstChild", List.of("childrenAllowed"), "root",
+                List.of("maybeHasChildren"), "maybeHasChildren(root)", "childrenAllowed(root)", "childrenAllowed"),
+                sm.errorContext());
+    }
+
+    @Test
+    public void testErrorContextForPreconditionWithMultipleStates() {
+        StateRefinementError error = verifyStateError("errors/door", "twice");
+        assertEquals(new StateMachineErrorContext("lock", List.of("locked"), "twice", List.of("open", "closed"),
+                "open(twice) || closed(twice)", "locked(twice)", "locked"),
+                parseWithErrorContext(error).errorContext());
+    }
+
+    @Test
+    public void testErrorContextForNegatedPrecondition() {
+        StateRefinementError error = verifyStateError("errors/door", "pushed");
+        assertEquals(new StateMachineErrorContext("push", List.of("locked"), "pushed", List.of("open", "closed"),
+                "!locked(pushed)", "locked(pushed)", "locked"),
+                parseWithErrorContext(error).errorContext());
+    }
+
+    @Test
+    public void testErrorContextWithoutDefiniteFoundState() {
+        // found flag ? open(unknown) : closed(unknown) does not establish one state
+        StateRefinementError error = verifyStateError("errors/door", "unknown");
+        assertEquals(new StateMachineErrorContext("unlock", List.of("open", "closed"), "unknown",
+                List.of("locked"), "locked(unknown)", "flag ? open(unknown) : closed(unknown)", null),
+                parseWithErrorContext(error).errorContext());
+    }
+
+    @Test
+    public void testDefiniteFoundState() {
+        String doorUri = uri("errors/door/Door.java");
+        assertEquals("open", definiteFoundState(doorUri, "open(d)"));
+        assertEquals("open", definiteFoundState(doorUri, "open(d) && !locked(d)"));
+        assertEquals("open", definiteFoundState(doorUri, "open(d) && open(e)"));
+        assertEquals("open", definiteFoundState(doorUri, "open(d) && (closed(e) || locked(e))"));
+        assertNull(definiteFoundState(doorUri, "open(d) || closed(d)"));
+        assertNull(definiteFoundState(doorUri, "flag ? open(d) : closed(d)"));
+        assertNull(definiteFoundState(doorUri, "!locked(d)"));
+        assertNull(definiteFoundState(doorUri, "!open(d) && !locked(d)"));
+        assertNull(definiteFoundState(doorUri, "!(open(d) || locked(d))"));
+        assertNull(definiteFoundState(doorUri, "open(d) && closed(d)"));
+        assertNull(definiteFoundState(doorUri, "open(d) && !open(d)"));
+        assertNull(definiteFoundState(doorUri, "open(d) && (open(d) || closed(d))"));
+        assertNull(definiteFoundState(doorUri, "open(e)"));
+        assertNull(definiteFoundState(doorUri, "true"));
+    }
+
+    @Test
+    public void testFoundConditionIsRestrictedToReceiver() {
+        CtTypeReference<?> doorType = new Launcher().getFactory().Type().createReference("fsm.errors.door.Door");
+        VCImplication other = new VCImplication("#e_2", doorType, predicate("closed(#e_2)"));
+        VCImplication receiver = new VCImplication("#d_3", doorType, predicate("open(#d_3) && x > 0"));
+        other.setNext(receiver);
+        StateMachineErrorContext errorContext = StateMachineParser.parseWithErrorContext(
+                uri("errors/door/Door.java"), null, RefinementsParser.createAST("locked(#d_3)", ""), other)
+                .errorContext();
+        assertEquals(new StateMachineErrorContext(null, List.of("open"), "d", List.of("locked"), "locked(d)",
+                "open(d) && x > 0", "open"), errorContext);
+    }
+
+    @Test
+    public void testCalledConstructorAndStaticFactory() {
+        CtClass<?> staticFactory = (CtClass<?>) buildType("StaticFactory.java");
+        assertEquals("StaticFactory", calledMethod("StaticFactory.java",
+                staticFactory.getConstructors().iterator().next().getPosition()));
+        assertEquals("of", calledMethod("StaticFactory.java",
+                staticFactory.getMethodsByName("of").get(0).getPosition()));
+        assertEquals("close", calledMethod("StaticFactory.java",
+                staticFactory.getMethodsByName("close").get(0).getPosition()));
+
+        // interfaces declare constructors as methods named after the class
+        CtType<?> refinements = buildType("errors/tree/DefaultMutableTreeNodeRefinements.java");
+        assertEquals("DefaultMutableTreeNode", calledMethod("errors/tree/DefaultMutableTreeNodeRefinements.java",
+                refinements.getMethodsByName("DefaultMutableTreeNode").get(0).getPosition()));
+
+        // positions outside the state machine's type resolve to no method
+        assertNull(calledMethod("errors/tree/DefaultMutableTreeNodeRefinements.java",
+                staticFactory.getMethodsByName("close").get(0).getPosition()));
+    }
+
     private static void assertStateMachineEquals(StateMachine expected, StateMachine actual) {
         assertNotNull(actual, "State machine should not be null");
         assertEquals(expected.className(), actual.className(), "Class names should match");
@@ -282,5 +383,46 @@ public class StateMachineParserTests {
             List<StateMachineTransition> transitions, List<StateMachineInitialTransition> initialTransitions) {
         String qualifiedName = className.contains(".") ? className : "fsm." + className;
         return new StateMachine(qualifiedName, states, transitions, initialTransitions, null);
+    }
+
+    private static StateRefinementError verifyStateError(String directory, String receiver) {
+        CommandLineLauncher.launch(BASE_PATH.resolve(directory).toAbsolutePath().toString());
+        return Diagnostics.getInstance().getErrors().stream()
+                .filter(StateRefinementError.class::isInstance)
+                .map(StateRefinementError.class::cast)
+                .filter(error -> error.getFound().toString().contains("#" + receiver + "_"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("No state refinement error found for " + receiver));
+    }
+
+    // same arguments as the vscode-liquidjava server
+    private static StateMachine parseWithErrorContext(StateRefinementError error) {
+        return StateMachineParser.parseWithErrorContext(
+                new File(error.getDeclarationPosition().getFile().getPath()).toURI().toString(),
+                error.getDeclarationPosition(), error.getExpected().getExpression(), error.getFound());
+    }
+
+    private static String definiteFoundState(String uri, String found) {
+        CtTypeReference<?> doorType = new Launcher().getFactory().Type().createReference("fsm.errors.door.Door");
+        VCImplication foundState = new VCImplication("d", doorType, predicate(found));
+        return StateMachineParser.parseWithErrorContext(uri, null, RefinementsParser.createAST("locked(d)", ""),
+                foundState).errorContext().definiteFoundState();
+    }
+
+    private static Predicate predicate(String expr) {
+        return new Predicate(RefinementsParser.createAST(expr, ""));
+    }
+
+    private static String calledMethod(String file, SourcePosition declarationPosition) {
+        return StateMachineParser.parseWithErrorContext(uri(file), declarationPosition, null, null)
+                .errorContext().calledMethod();
+    }
+
+    private static CtType<?> buildType(String file) {
+        Launcher launcher = new Launcher();
+        launcher.getEnvironment().setNoClasspath(true);
+        launcher.addInputResource(BASE_PATH.resolve(file).toAbsolutePath().toString());
+        launcher.buildModel();
+        return launcher.getModel().getAllTypes().iterator().next();
     }
 }

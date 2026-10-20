@@ -4,16 +4,20 @@ import java.net.URI;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 
 import liquidjava.rj_language.ast.*;
 import liquidjava.rj_language.parsing.RefinementsParser;
 import liquidjava.processor.VCImplication;
+import liquidjava.rj_language.ast.formatter.ExpressionFormatter;
+import liquidjava.rj_language.ast.formatter.VariableFormatter;
 import liquidjava.utils.Utils;
 import spoon.Launcher;
 import spoon.reflect.CtModel;
 import spoon.reflect.declaration.CtAnnotation;
 import spoon.reflect.declaration.CtClass;
+import spoon.reflect.declaration.CtConstructor;
 import spoon.reflect.declaration.CtElement;
 import spoon.reflect.declaration.CtExecutable;
 import spoon.reflect.declaration.CtMethod;
@@ -79,20 +83,58 @@ public class StateMachineParser {
             if (transitions.isEmpty())
                 return null; // no transitions found
 
-            CtMethod<?> calledMethod = declarationPosition == null ? null : ctType.getMethods().stream()
-                    .filter(method -> method.getPosition().equals(declarationPosition))
-                    .findFirst()
-                    .orElse(null);
             StateMachineErrorContext errorContext = declarationPosition == null && expectedState == null
-                    && foundState == null ? null : new StateMachineErrorContext(
-                    calledMethod == null ? null : calledMethod.getSimpleName(),
-                    getActualStates(expectedState, foundState, states));
+                    && foundState == null ? null : getErrorContext(ctType, simpleClassName, states,
+                    declarationPosition, expectedState, foundState);
             return new StateMachine(className, states, transitions, initialTransitions, errorContext);
 
         } catch (Exception e) {
             e.printStackTrace();
             return null;
         }
+    }
+
+    private static StateMachineErrorContext getErrorContext(CtType<?> ctType, String className, List<String> states,
+            SourcePosition declarationPosition, Expression expectedState, VCImplication foundState) {
+        String receiver = getStateReceiver(expectedState, states);
+        String receiverName = receiver == null ? null : VariableFormatter.withoutInstance(receiver);
+        List<Expression> foundPremises = getReceiverPremises(foundState, receiver);
+        return new StateMachineErrorContext(
+                getCalledMethod(ctType, className, declarationPosition),
+                getActualStates(expectedState, foundState, states),
+                receiverName,
+                getExpectedStates(expectedState, states, receiver),
+                expectedState == null ? null : formatCondition(expectedState, receiver, receiverName),
+                getFoundCondition(foundState, foundPremises, receiver, receiverName),
+                getDefiniteState(foundPremises, states, receiver));
+    }
+
+    /**
+     * Gets the name of the method, constructor or static factory whose declaration contains the given position
+     * The verifier reports the position of the state refinement annotation value, so the position is matched by range
+     * Constructors are named after the class
+     */
+    private static String getCalledMethod(CtType<?> ctType, String className, SourcePosition declarationPosition) {
+        if (declarationPosition == null || !declarationPosition.isValidPosition()) return null;
+        List<CtExecutable<?>> executables = new ArrayList<>(ctType.getMethods());
+        if (ctType instanceof CtClass<?> ctClass) {
+            executables.addAll(ctClass.getConstructors());
+        }
+        return executables.stream()
+                .filter(executable -> contains(executable.getPosition(), declarationPosition))
+                .min(Comparator.comparingInt(executable -> executable.getPosition().getSourceEnd()
+                        - executable.getPosition().getSourceStart()))
+                .map(executable -> executable instanceof CtConstructor<?> ? className : executable.getSimpleName())
+                .orElse(null);
+    }
+
+    private static boolean contains(SourcePosition outer, SourcePosition inner) {
+        return outer.isValidPosition()
+                && outer.getFile() != null && inner.getFile() != null
+                && outer.getFile().toPath().toAbsolutePath().normalize()
+                        .equals(inner.getFile().toPath().toAbsolutePath().normalize())
+                && outer.getSourceStart() <= inner.getSourceStart()
+                && inner.getSourceEnd() <= outer.getSourceEnd();
     }
 
     private static List<String> getActualStates(Expression expectedState, VCImplication foundState,
@@ -107,6 +149,95 @@ public class StateMachineParser {
             }
         }
         return states.stream().filter(foundStates::contains).toList();
+    }
+
+    /**
+     * Gets the states accepted by the expected condition for the receiver, in state set order
+     */
+    private static List<String> getExpectedStates(Expression expectedState, List<String> states, String receiver) {
+        if (expectedState == null || receiver == null) return List.of();
+        List<String> expectedStates = getStateExpressions(expectedState, states, receiver);
+        return states.stream().filter(expectedStates::contains).toList();
+    }
+
+    /**
+     * Gets the found premises about the receiver: those bound to it and unbound ones that mention it
+     */
+    private static List<Expression> getReceiverPremises(VCImplication foundState, String receiver) {
+        List<Expression> premises = new ArrayList<>();
+        if (receiver == null) return premises;
+        for (VCImplication premise = foundState; premise != null; premise = premise.getNext()) {
+            if (premise.getRefinement() == null) continue;
+            Expression expr = premise.getRefinement().getExpression();
+            boolean bound = premise.hasBinder() && receiver.equals(premise.getName());
+            boolean mentioned = !premise.hasBinder() && premise.getRefinement().getVariableNames().contains(receiver);
+            if ((bound || mentioned) && !expr.isBooleanTrue()) {
+                premises.add(expr);
+            }
+        }
+        return premises;
+    }
+
+    private static String getFoundCondition(VCImplication foundState, List<Expression> foundPremises,
+            String receiver, String receiverName) {
+        if (foundState == null) return null;
+        if (receiver == null) return ExpressionFormatter.format(foundState.toPredicate().getExpression());
+        return formatCondition(joinConjunction(foundPremises), receiver, receiverName);
+    }
+
+    private static Expression joinConjunction(List<Expression> exprs) {
+        Expression conjunction = null;
+        for (Expression expr : exprs) {
+            conjunction = conjunction == null ? expr : new BinaryExpression(conjunction, "&&", expr);
+        }
+        return conjunction == null ? new LiteralBoolean(true) : conjunction;
+    }
+
+    /**
+     * Formats a condition for display, showing the receiver by its source name (e.g. root instead of root¹⁷)
+     */
+    private static String formatCondition(Expression expr, String receiver, String receiverName) {
+        if (receiver != null && receiverName != null) {
+            expr = expr.substitute(new Var(receiver), new Var(receiverName));
+        }
+        return ExpressionFormatter.format(expr);
+    }
+
+    /**
+     * Gets the single state the found premises establish for the receiver, or null if there is none
+     * A state is established only when it is a top-level conjunct; any other conjunct about the receiver's
+     * states (disjunction, conditional, ...) makes the result null, except negations of other states.
+     * Negations alone never establish a state since the verifier does not bound the state set
+     */
+    private static String getDefiniteState(List<Expression> premises, List<String> states, String receiver) {
+        if (receiver == null) return null;
+        List<String> found = new ArrayList<>();
+        List<String> excluded = new ArrayList<>();
+        for (Expression premise : premises) {
+            for (Expression conjunct : premise.getConjuncts()) {
+                String state = getReceiverState(conjunct, states, receiver);
+                String negated = conjunct instanceof UnaryExpression unary && unary.getOp().equals("!")
+                        ? getReceiverState(unary.getExpression(), states, receiver) : null;
+                if (state != null) {
+                    if (!found.contains(state)) found.add(state);
+                } else if (negated != null) {
+                    excluded.add(negated);
+                } else if (mentionsReceiverState(conjunct, states, receiver)) {
+                    return null;
+                }
+            }
+        }
+        if (found.size() != 1 || excluded.contains(found.get(0))) return null;
+        return found.get(0);
+    }
+
+    private static String getReceiverState(Expression expr, List<String> states, String receiver) {
+        return expr instanceof FunctionInvocation ? getStateName(expr, states, receiver) : null;
+    }
+
+    private static boolean mentionsReceiverState(Expression expr, List<String> states, String receiver) {
+        if (getReceiverState(expr, states, receiver) != null) return true;
+        return expr.getChildren().stream().anyMatch(child -> mentionsReceiverState(child, states, receiver));
     }
 
     private static String getStateReceiver(Expression expr, List<String> states) {
