@@ -11,6 +11,7 @@ import java.util.List;
  * @param expectedCondition the expected condition as text
  * @param foundCondition the found condition for the receiver as text
  * @param definiteFoundState the single state the found condition establishes, or null if there is none
+ * @param possibleStates the states the found condition allows for the receiver, in state set order
  */
 public record StateMachineErrorContext(
     String calledMethod,
@@ -19,5 +20,6 @@ public record StateMachineErrorContext(
     List<String> expectedStates,
     String expectedCondition,
     String foundCondition,
-    String definiteFoundState
+    String definiteFoundState,
+    List<String> possibleStates
 ) {}
