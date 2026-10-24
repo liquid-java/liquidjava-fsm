@@ -106,7 +106,8 @@ public class StateMachineParser {
                 getExpectedStates(expectedState, states, receiver),
                 expectedState == null ? null : formatCondition(expectedState, receiver, receiverName),
                 getFoundCondition(foundState, foundPremises, receiver, receiverName),
-                getDefiniteState(foundPremises, states, receiver));
+                getDefiniteState(foundPremises, states, receiver),
+                getPossibleStates(foundPremises, states, receiver));
     }
 
     /**
@@ -229,6 +230,24 @@ public class StateMachineParser {
         }
         if (found.size() != 1 || excluded.contains(found.get(0))) return null;
         return found.get(0);
+    }
+
+    /**
+     * Gets the states the found premises allow for the receiver, in state set order
+     * Each conjunct about the receiver's states is evaluated like the expected condition and the results are
+     * intersected; conjuncts that do not mention the receiver's states do not restrict it
+     */
+    private static List<String> getPossibleStates(List<Expression> premises, List<String> states, String receiver) {
+        if (receiver == null) return List.of();
+        List<String> possible = new ArrayList<>(states);
+        for (Expression premise : premises) {
+            for (Expression conjunct : premise.getConjuncts()) {
+                if (mentionsReceiverState(conjunct, states, receiver)) {
+                    possible.retainAll(getStateExpressions(conjunct, states, receiver));
+                }
+            }
+        }
+        return List.copyOf(possible);
     }
 
     private static String getReceiverState(Expression expr, List<String> states, String receiver) {

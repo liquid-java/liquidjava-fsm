@@ -45,7 +45,8 @@ public class StateMachineParserTests {
     @Test
     public void testStateMachineGroupsErrorContext() {
         StateMachineErrorContext errorContext = new StateMachineErrorContext(
-                "read", List.of("closed"), "file", List.of("open"), "open(file)", "closed(file)", "closed");
+                "read", List.of("closed"), "file", List.of("open"), "open(file)", "closed(file)", "closed",
+                List.of("closed"));
         StateMachine sm = new StateMachine("Simple", List.of("open", "closed"), List.of(), List.of(), errorContext);
 
         assertEquals(errorContext, sm.errorContext());
@@ -287,7 +288,8 @@ public class StateMachineParserTests {
         StateMachine sm = parseWithErrorContext(error);
         assertNotNull(sm);
         assertEquals(new StateMachineErrorContext("getFirstChild", List.of("childrenAllowed"), "root",
-                List.of("maybeHasChildren"), "maybeHasChildren(root)", "childrenAllowed(root)", "childrenAllowed"),
+                List.of("maybeHasChildren"), "maybeHasChildren(root)", "childrenAllowed(root)", "childrenAllowed",
+                List.of("childrenAllowed")),
                 sm.errorContext());
     }
 
@@ -295,7 +297,7 @@ public class StateMachineParserTests {
     public void testErrorContextForPreconditionWithMultipleStates() {
         StateRefinementError error = verifyStateError("errors/door", "twice");
         assertEquals(new StateMachineErrorContext("lock", List.of("locked"), "twice", List.of("open", "closed"),
-                "open(twice) || closed(twice)", "locked(twice)", "locked"),
+                "open(twice) || closed(twice)", "locked(twice)", "locked", List.of("locked")),
                 parseWithErrorContext(error).errorContext());
     }
 
@@ -303,7 +305,7 @@ public class StateMachineParserTests {
     public void testErrorContextForNegatedPrecondition() {
         StateRefinementError error = verifyStateError("errors/door", "pushed");
         assertEquals(new StateMachineErrorContext("push", List.of("locked"), "pushed", List.of("open", "closed"),
-                "!locked(pushed)", "locked(pushed)", "locked"),
+                "!locked(pushed)", "locked(pushed)", "locked", List.of("locked")),
                 parseWithErrorContext(error).errorContext());
     }
 
@@ -312,8 +314,72 @@ public class StateMachineParserTests {
         // found flag ? open(unknown) : closed(unknown) does not establish one state
         StateRefinementError error = verifyStateError("errors/door", "unknown");
         assertEquals(new StateMachineErrorContext("unlock", List.of("open", "closed"), "unknown",
-                List.of("locked"), "locked(unknown)", "flag ? open(unknown) : closed(unknown)", null),
+                List.of("locked"), "locked(unknown)", "flag ? open(unknown) : closed(unknown)", null,
+                List.of("open", "closed")),
                 parseWithErrorContext(error).errorContext());
+    }
+
+    @Test
+    public void testErrorContextForStateFromBranches() {
+        // socket.receive after closing the socket on one branch and sending on the other
+        StateRefinementError error = verifyStateError("errors/udp", "socket");
+        StateMachineErrorContext errorContext = parseWithErrorContext(error).errorContext();
+        assertEquals("receive", errorContext.calledMethod());
+        assertEquals("socket", errorContext.receiver());
+        assertEquals(List.of("unbound", "bound", "connected"), errorContext.expectedStates());
+        assertEquals(List.of("bound", "closed"), errorContext.possibleStates());
+        assertNull(errorContext.definiteFoundState());
+    }
+
+    @Test
+    public void testPossibleStates() {
+        String doorUri = uri("errors/door/Door.java");
+        assertEquals(List.of("open"), possibleStates(doorUri, "open(d)"));
+        assertEquals(List.of("open"), possibleStates(doorUri, "open(d) && !locked(d)"));
+        assertEquals(List.of("open"), possibleStates(doorUri, "open(d) && (closed(e) || locked(e))"));
+        assertEquals(List.of("open", "closed"), possibleStates(doorUri, "closed(d) || open(d)"));
+        assertEquals(List.of("open", "closed"), possibleStates(doorUri, "flag ? open(d) : closed(d)"));
+        assertEquals(List.of("open", "locked"), possibleStates(doorUri, "!closed(d)"));
+        assertEquals(List.of("closed"), possibleStates(doorUri, "!open(d) && !locked(d)"));
+        assertEquals(List.of("closed"), possibleStates(doorUri, "!(open(d) || locked(d))"));
+        assertEquals(List.of("open"), possibleStates(doorUri, "open(d) && (open(d) || closed(d))"));
+        assertEquals(List.of(), possibleStates(doorUri, "open(d) && closed(d)"));
+        assertEquals(List.of(), possibleStates(doorUri, "open(d) && !open(d)"));
+        assertEquals(List.of("open", "closed", "locked"), possibleStates(doorUri, "open(e)"));
+        assertEquals(List.of("open", "closed", "locked"), possibleStates(doorUri, "x > 0"));
+        assertEquals(List.of("open", "closed", "locked"), possibleStates(doorUri, "true"));
+    }
+
+    @Test
+    public void testNegatedFoundExcludesState() {
+        CtTypeReference<?> doorType = new Launcher().getFactory().Type().createReference("fsm.errors.door.Door");
+        VCImplication found = new VCImplication("#s_4", doorType, predicate("!closed(#s_4)"));
+        StateMachineErrorContext errorContext = StateMachineParser.parseWithErrorContext(
+                uri("errors/door/Door.java"), null, RefinementsParser.createAST("closed(#s_4)", ""), found)
+                .errorContext();
+        assertEquals(List.of("open", "locked"), errorContext.possibleStates());
+    }
+
+    @Test
+    public void testPossibleStatesWithoutReceiver() {
+        CtTypeReference<?> doorType = new Launcher().getFactory().Type().createReference("fsm.errors.door.Door");
+        VCImplication found = new VCImplication("d", doorType, predicate("open(d)"));
+        assertEquals(List.of(), StateMachineParser.parseWithErrorContext(uri("errors/door/Door.java"), null,
+                RefinementsParser.createAST("x > 0", ""), found).errorContext().possibleStates());
+    }
+
+    @Test
+    public void testPossibleStatesMatchDefiniteFoundState() {
+        String doorUri = uri("errors/door/Door.java");
+        for (String found : List.of("open(d)", "open(d) && !locked(d)", "open(d) && open(e)",
+                "open(d) && (closed(e) || locked(e))", "open(d) || closed(d)", "flag ? open(d) : closed(d)",
+                "!locked(d)", "!open(d) && !locked(d)", "!(open(d) || locked(d))", "open(d) && closed(d)",
+                "open(d) && !open(d)", "open(d) && (open(d) || closed(d))", "open(e)", "true")) {
+            StateMachineErrorContext errorContext = errorContext(doorUri, found);
+            if (errorContext.definiteFoundState() != null) {
+                assertEquals(List.of(errorContext.definiteFoundState()), errorContext.possibleStates(), found);
+            }
+        }
     }
 
     @Test
@@ -345,7 +411,7 @@ public class StateMachineParserTests {
                 uri("errors/door/Door.java"), null, RefinementsParser.createAST("locked(#d_3)", ""), other)
                 .errorContext();
         assertEquals(new StateMachineErrorContext(null, List.of("open"), "d", List.of("locked"), "locked(d)",
-                "open(d) && x > 0", "open"), errorContext);
+                "open(d) && x > 0", "open", List.of("open")), errorContext);
     }
 
     @Test
@@ -402,11 +468,19 @@ public class StateMachineParserTests {
                 error.getDeclarationPosition(), error.getExpected().getExpression(), error.getFound());
     }
 
-    private static String definiteFoundState(String uri, String found) {
+    private static StateMachineErrorContext errorContext(String uri, String found) {
         CtTypeReference<?> doorType = new Launcher().getFactory().Type().createReference("fsm.errors.door.Door");
         VCImplication foundState = new VCImplication("d", doorType, predicate(found));
         return StateMachineParser.parseWithErrorContext(uri, null, RefinementsParser.createAST("locked(d)", ""),
-                foundState).errorContext().definiteFoundState();
+                foundState).errorContext();
+    }
+
+    private static String definiteFoundState(String uri, String found) {
+        return errorContext(uri, found).definiteFoundState();
+    }
+
+    private static List<String> possibleStates(String uri, String found) {
+        return errorContext(uri, found).possibleStates();
     }
 
     private static Predicate predicate(String expr) {
