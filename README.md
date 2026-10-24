@@ -34,6 +34,8 @@ import liquidjava.fsm.StateMachine;
 import liquidjava.fsm.StateMachineParser;
 
 StateMachine stateMachine = StateMachineParser.parse(path.toUri().toString());
+// in a file with several classes, or for a verifier error's StateErrorContext#receiverClass
+StateMachine named = StateMachineParser.parse(path.toUri().toString(), "example.File");
 ```
 
 ### JSON Output
