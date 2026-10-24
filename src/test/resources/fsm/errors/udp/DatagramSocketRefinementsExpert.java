@@ -47,16 +47,13 @@ public interface DatagramSocketRefinementsExpert {
 	void disconnect();
 
 	@StateRefinement(from = "connected(this)")
-	@StateRefinement(from = "closed(this) && connected(old(this))")
 	InetAddress getInetAddress();
 
 	@StateRefinement(from = "connected(this)")
-	@StateRefinement(from = "closed(this) && connected(old(this))")
 	@Refinement("Port(_) || _ == -1")
 	int getPort();
 
 	@StateRefinement(from = "connected(this)")
-	@StateRefinement(from = "closed(this) && connected(old(this))")
 	SocketAddress getRemoteSocketAddress();
 
 	@StateRefinement(from = "bound(this)")
