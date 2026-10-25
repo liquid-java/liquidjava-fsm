@@ -36,13 +36,22 @@ import liquidjava.fsm.StateMachineParser;
 StateMachine stateMachine = StateMachineParser.parse(path.toUri().toString());
 // in a file with several classes, or for a verifier error's StateErrorContext#receiverClass
 StateMachine named = StateMachineParser.parse(path.toUri().toString(), "example.File");
+// one state machine per @StateSet, in declaration order
+List<StateMachine> stateMachines = StateMachineParser.parseAll(path.toUri().toString());
 ```
+
+A class with several `@StateSet` annotations has one state machine per state set, since each changes independently.
+`stateSet` is the index of the state set, the same order the verifier uses in `StateErrorContext`.
+A state machine only has the transitions that mention its states. States of other state sets in a `from` are kept as
+conditions, and in a `to` they are left out, since they change at the same time.
+`parse` returns the state machine of the first state set.
 
 ### JSON Output
 
 ```json
 {
   "className": "example.File",
+  "stateSet": 0,
   "states": [
     "open",
     "closed"

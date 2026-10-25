@@ -39,9 +39,30 @@ public class StateMachineParser {
      * Parses the class or interface with the given name in the given uri, for files that declare several
      * @param uri the document URI
      * @param className the qualified class name, or the name given by ExternalRefinementsFor
-     * @return StateMachine or null if none found
+     * @return StateMachine of the first state set with transitions, or null if none found
      */
     public static StateMachine parse(String uri, String className) {
+        List<StateMachine> stateMachines = parseAll(uri, className);
+        return stateMachines.isEmpty() ? null : stateMachines.get(0);
+    }
+
+    /**
+     * Parses a class or interface for the given uri and extracts one state machine per state set
+     * @param uri the document URI
+     * @return the state machines of the state sets with transitions, in declaration order
+     */
+    public static List<StateMachine> parseAll(String uri) {
+        return parseAll(uri, null);
+    }
+
+    /**
+     * Parses the class or interface with the given name in the given uri and extracts one state machine per state set
+     * Each state set changes independently, so a state machine only has the transitions that mention its states
+     * @param uri the document URI
+     * @param className the qualified class name, or the name given by ExternalRefinementsFor
+     * @return the state machines of the state sets with transitions, in declaration order
+     */
+    public static List<StateMachine> parseAll(String uri, String className) {
         try {
             String filePath = Paths.get(new URI(uri)).toString();
             Launcher launcher = new Launcher();
@@ -54,34 +75,59 @@ public class StateMachineParser {
             // get class or interface
             CtType<?> ctType = getType(model, className);
             if (ctType == null)
-                return null; // no class or interface found
+                return List.of(); // no class or interface found
 
-            // extract class name and states
-            List<String> states = getStates(ctType);
-            if (states == null || states.isEmpty())
-                return null; // no states found
+            // extract class name and state sets
+            List<List<String>> stateSets = getStateSets(ctType);
             String qualifiedName = getClassName(ctType);
-            String simpleClassName = Utils.getSimpleName(qualifiedName);
-
-            // get initial transitions and method transitions
-            List<StateMachineInitialTransition> factoryTransitions = getFactoryTransitions(ctType, simpleClassName, states);
-            List<StateMachineInitialTransition> initialTransitions = getInitialTransitions(ctType, simpleClassName, states);
-            // interfaces only have an implicit initial state when there are no factory methods
-            if (initialTransitions.isEmpty() && (ctType instanceof CtClass<?> || factoryTransitions.isEmpty())) {
-                initialTransitions = getDefaultInitialTransitions(ctType, simpleClassName, states.get(0));
+            List<StateMachine> stateMachines = new ArrayList<>();
+            for (int i = 0; i < stateSets.size(); i++) {
+                List<String> otherStates = new ArrayList<>();
+                for (int j = 0; j < stateSets.size(); j++) {
+                    if (j != i)
+                        otherStates.addAll(stateSets.get(j));
+                }
+                StateMachine sm = parseStateSet(ctType, qualifiedName, i, stateSets.get(i), otherStates);
+                if (sm != null)
+                    stateMachines.add(sm);
             }
-            initialTransitions = new ArrayList<>(initialTransitions);
-            initialTransitions.addAll(factoryTransitions);
-            List<StateMachineTransition> transitions = getTransitions(ctType, simpleClassName, states);
-            if (transitions.isEmpty())
-                return null; // no transitions found
-
-            return new StateMachine(qualifiedName, states, transitions, initialTransitions);
+            return stateMachines;
 
         } catch (Exception e) {
             e.printStackTrace();
-            return null;
+            return List.of();
         }
+    }
+
+    /**
+     * Extracts the state machine of one state set
+     * @param ctType the CtType (class or interface)
+     * @param qualifiedName the class name
+     * @param stateSet the index of the state set
+     * @param states the states of the state set
+     * @param otherStates the states of the other state sets
+     * @return StateMachine or null if the state set has no transitions
+     */
+    private static StateMachine parseStateSet(CtType<?> ctType, String qualifiedName, int stateSet,
+            List<String> states, List<String> otherStates) {
+        if (states.isEmpty())
+            return null; // no states found
+        String simpleClassName = Utils.getSimpleName(qualifiedName);
+
+        // get initial transitions and method transitions
+        List<StateMachineInitialTransition> factoryTransitions = getFactoryTransitions(ctType, simpleClassName, states, otherStates);
+        List<StateMachineInitialTransition> initialTransitions = getInitialTransitions(ctType, simpleClassName, states, otherStates);
+        // interfaces only have an implicit initial state when there are no factory methods
+        if (initialTransitions.isEmpty() && (ctType instanceof CtClass<?> || factoryTransitions.isEmpty())) {
+            initialTransitions = getDefaultInitialTransitions(ctType, simpleClassName, states.get(0));
+        }
+        initialTransitions = new ArrayList<>(initialTransitions);
+        initialTransitions.addAll(factoryTransitions);
+        List<StateMachineTransition> transitions = getTransitions(ctType, simpleClassName, states, otherStates);
+        if (transitions.isEmpty())
+            return null; // no transitions found
+
+        return new StateMachine(qualifiedName, stateSet, states, transitions, initialTransitions);
     }
 
     /**
@@ -115,18 +161,19 @@ public class StateMachineParser {
     }
 
     /**
-     * Gets the possible states from a class or interface
+     * Gets the state sets from a class or interface
      * @param ctType the CtType (class or interface)
-     * @return list of states
+     * @return list of state sets, in declaration order
      */
-    private static List<String> getStates(CtType<?> ctType) {
+    private static List<List<String>> getStateSets(CtType<?> ctType) {
+        List<List<String>> stateSets = new ArrayList<>();
         for (CtAnnotation<?> annotation : ctType.getAnnotations()) {
             if (annotation.getAnnotationType().getSimpleName().equals(STATE_SET_ANNOTATION)) {
                 String[] stateArray = (String[]) annotation.getValueAsObject("value");
-                return List.of(stateArray);
+                stateSets.add(List.of(stateArray));
             }
         }
-        return null;
+        return stateSets;
     }
 
     /**
@@ -149,9 +196,11 @@ public class StateMachineParser {
      * @param ctType the CtType (class or interface)
      * @param className the class name
      * @param states the list of states
+     * @param otherStates the states of the other state sets
      * @return initial transitions
      */
-    private static List<StateMachineInitialTransition> getInitialTransitions(CtType<?> ctType, String className, List<String> states) {
+    private static List<StateMachineInitialTransition> getInitialTransitions(CtType<?> ctType, String className,
+            List<String> states, List<String> otherStates) {
         List<StateMachineInitialTransition> initialTransitions = new ArrayList<>();
         for (CtExecutable<?> element : getConstructorElements(ctType, className)) {
             String signature = getConstructorSignature(element, className);
@@ -159,7 +208,7 @@ public class StateMachineParser {
             for (CtAnnotation<?> annotation : element.getAnnotations()) {
                 if (annotation.getAnnotationType().getSimpleName().equals(STATE_REFINEMENT_ANNOTATION)) {
                     String to = annotation.getValueAsString("to");
-                    List<StateMachineInitialTransition> transitions = parseInitialTransitions(to, states, signature);
+                    List<StateMachineInitialTransition> transitions = parseInitialTransitions(to, states, otherStates, signature);
                     initialTransitions.addAll(transitions);
                     hasExplicitInitialState |= !transitions.isEmpty();
                 }
@@ -194,9 +243,11 @@ public class StateMachineParser {
      * @param ctType the CtType (class or interface)
      * @param className the class name
      * @param states the list of states
+     * @param otherStates the states of the other state sets
      * @return initial transitions
      */
-    private static List<StateMachineInitialTransition> getFactoryTransitions(CtType<?> ctType, String className, List<String> states) {
+    private static List<StateMachineInitialTransition> getFactoryTransitions(CtType<?> ctType, String className,
+            List<String> states, List<String> otherStates) {
         List<StateMachineInitialTransition> initialTransitions = new ArrayList<>();
         for (CtMethod<?> method : ctType.getMethods()) {
             if (ctType.isClass() && !method.isStatic())
@@ -207,7 +258,7 @@ public class StateMachineParser {
             for (CtAnnotation<?> annotation : method.getAnnotations()) {
                 if (annotation.getAnnotationType().getSimpleName().equals(REFINEMENT_ANNOTATION)) {
                     String refinement = annotation.getValueAsString("value");
-                    initialTransitions.addAll(parseInitialTransitions(refinement, states, signature));
+                    initialTransitions.addAll(parseInitialTransitions(refinement, states, otherStates, signature));
                 }
             }
         }
@@ -225,9 +276,11 @@ public class StateMachineParser {
      * @param ctType the CtType (class or interface)
      * @param className the class name
      * @param states the list of states
+     * @param otherStates the states of the other state sets
      * @return list of StateMachineTransition
      */
-    private static List<StateMachineTransition> getTransitions(CtType<?> ctType, String className, List<String> states) {
+    private static List<StateMachineTransition> getTransitions(CtType<?> ctType, String className, List<String> states,
+            List<String> otherStates) {
         List<StateMachineTransition> transitions = new ArrayList<>();
         for (CtMethod<?> method : ctType.getMethods()) {
             // for interfaces we skip constructor methods (methods with same name as class)
@@ -235,7 +288,7 @@ public class StateMachineParser {
                 continue;
             for (CtAnnotation<?> annotation : method.getAnnotations()) {
                 if (annotation.getAnnotationType().getSimpleName().equals(STATE_REFINEMENT_ANNOTATION)) {
-                    transitions.addAll(getTransitions(annotation, method.getSimpleName(), states));
+                    transitions.addAll(getTransitions(annotation, method.getSimpleName(), states, otherStates));
                 }
             }
         }
@@ -247,18 +300,25 @@ public class StateMachineParser {
      * @param ann the CtAnnotation
      * @param method the method name
      * @param states the list of states
+     * @param otherStates the states of the other state sets
      * @return list of StateMachineTransition
      */
-    private static List<StateMachineTransition> getTransitions(CtAnnotation<?> ann, String method, List<String> states) {
+    private static List<StateMachineTransition> getTransitions(CtAnnotation<?> ann, String method, List<String> states,
+            List<String> otherStates) {
         List<StateMachineTransition> transitions = new ArrayList<>();
         String from = ann.getValueAsString("from");
         String to = ann.getValueAsString("to");
+        boolean fromMentionsStates = mentionsStates(from, states);
+        boolean toMentionsStates = mentionsStates(to, states);
+        // the states of this state set do not change
+        if (!fromMentionsStates && !toMentionsStates)
+            return transitions;
 
-        // parse from and to expressions
+        // parse from and to expressions, the states of the other state sets in from are kept as conditions
         List<TransitionSource> fromSources = from.isEmpty() ? allStateSources(states) : parsePrecondition(from, states);
-        List<TransitionSource> toSources = !from.isEmpty() && to.isEmpty()
+        List<TransitionSource> toSources = fromMentionsStates && !toMentionsStates
                 ? parseStateSources(from, states)
-                : parsePostcondition(to, states);
+                : parsePostcondition(to, states, otherStates);
 
         // create transitions for each combination of from and to states
         for (TransitionSource fromSource : fromSources) {
@@ -286,10 +346,40 @@ public class StateMachineParser {
         return sources;
     }
 
-    private static List<TransitionSource> parsePostcondition(String expr, List<String> states) {
+    private static List<TransitionSource> parsePostcondition(String expr, List<String> states, List<String> otherStates) {
         if (expr == null || expr.isEmpty()) return new ArrayList<>();
-        Expression ast = RefinementsParser.createAST(expr, "");
+        Expression ast = withoutStates(RefinementsParser.createAST(expr, ""), otherStates);
+        if (ast == null) return new ArrayList<>();
         return getTransitionSources(ast, states, true);
+    }
+
+    /**
+     * Removes the conjuncts that set a state of another state set, which change at the same time and are not conditions
+     * @param expr the postcondition
+     * @param otherStates the states of the other state sets
+     * @return the postcondition without them, or null if nothing is left
+     */
+    private static Expression withoutStates(Expression expr, List<String> otherStates) {
+        if (getStateName(expr, otherStates) != null) {
+            return null;
+        }
+        if (expr instanceof BinaryExpression bin && bin.getOperator().equals("&&")) {
+            Expression left = withoutStates(bin.getFirstOperand(), otherStates);
+            Expression right = withoutStates(bin.getSecondOperand(), otherStates);
+            if (left == null) return right;
+            if (right == null) return left;
+            return new BinaryExpression(left, "&&", right);
+        } else if (expr instanceof Ite ite) {
+            Expression then = withoutStates(ite.getThen(), otherStates);
+            Expression otherwise = withoutStates(ite.getElse(), otherStates);
+            return new Ite(ite.getCondition(), then == null ? ite.getThen() : then, otherwise == null ? ite.getElse() : otherwise);
+        }
+        return expr;
+    }
+
+    private static boolean mentionsStates(String expr, List<String> states) {
+        if (expr == null || expr.isEmpty()) return false;
+        return !getStateExpressions(RefinementsParser.createAST(expr, ""), states).isEmpty();
     }
 
     private static List<TransitionSource> getTransitionSources(Expression expr, List<String> states, boolean stateOnlyDisjunctions) {
@@ -406,10 +496,10 @@ public class StateMachineParser {
     }
 
     private static List<StateMachineInitialTransition> parseInitialTransitions(String expr, List<String> states,
-            String constructorSignature) {
+            List<String> otherStates, String constructorSignature) {
         if (expr == null || expr.isEmpty()) return new ArrayList<>();
         List<StateMachineInitialTransition> initialTransitions = new ArrayList<>();
-        for (TransitionSource source : parsePostcondition(expr, states)) {
+        for (TransitionSource source : parsePostcondition(expr, states, otherStates)) {
             initialTransitions.add(new StateMachineInitialTransition(source.from(), source.cond(), constructorSignature));
         }
         return initialTransitions;
