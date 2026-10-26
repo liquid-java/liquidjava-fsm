@@ -275,22 +275,62 @@ public class StateMachineParserTests {
     }
 
     @Test
+    public void testStateMachinePerStateSet() {
+        // each state set only has the transitions that mention its states, the other state sets stay as conditions
+        List<StateMachine> sms = StateMachineParser.parseAll(uri("TwoStateSets.java"));
+        assertEquals(2, sms.size());
+        assertStateMachineEquals(stateMachine("TwoStateSets", 0, List.of("startTiling", "tilingExplicit", "tilingSet"),
+                List.of(new StateMachineTransition("startTiling", "startTiling", "resetTiling", "compressionSet(this)", null),
+                        new StateMachineTransition("tilingExplicit", "startTiling", "resetTiling", "compressionSet(this)", null),
+                        new StateMachineTransition("tilingSet", "startTiling", "resetTiling", "compressionSet(this)", null),
+                        new StateMachineTransition("tilingExplicit", "tilingSet", "setTiling"),
+                        new StateMachineTransition("startTiling", "tilingExplicit", "setTilingMode", null, "mode == 2"),
+                        new StateMachineTransition("startTiling", "startTiling", "setTilingMode", null, "!(mode == 2)"),
+                        new StateMachineTransition("tilingExplicit", "tilingExplicit", "setTilingMode", null, "mode == 2"),
+                        new StateMachineTransition("tilingExplicit", "startTiling", "setTilingMode", null, "!(mode == 2)"),
+                        new StateMachineTransition("tilingSet", "tilingExplicit", "setTilingMode", null, "mode == 2"),
+                        new StateMachineTransition("tilingSet", "startTiling", "setTilingMode", null, "!(mode == 2)"),
+                        new StateMachineTransition("tilingSet", "tilingSet", "write", "compressionSet(this)", null)),
+                List.of(new StateMachineInitialTransition("startTiling"),
+                        new StateMachineInitialTransition("tilingExplicit"))), sms.get(0));
+        // the second constructor does not set a compression state, so it starts in the first one
+        assertStateMachineEquals(stateMachine("TwoStateSets", 1,
+                List.of("startCompression", "compressionExplicit", "compressionSet"),
+                List.of(new StateMachineTransition("compressionSet", "compressionSet", "resetTiling"),
+                        new StateMachineTransition("startCompression", "compressionExplicit", "setCompressionMode", null, "mode == 2"),
+                        new StateMachineTransition("startCompression", "startCompression", "setCompressionMode", null, "!(mode == 2)"),
+                        new StateMachineTransition("compressionExplicit", "compressionExplicit", "setCompressionMode", null, "mode == 2"),
+                        new StateMachineTransition("compressionExplicit", "startCompression", "setCompressionMode", null, "!(mode == 2)"),
+                        new StateMachineTransition("compressionSet", "compressionExplicit", "setCompressionMode", null, "mode == 2"),
+                        new StateMachineTransition("compressionSet", "startCompression", "setCompressionMode", null, "!(mode == 2)"),
+                        new StateMachineTransition("compressionExplicit", "compressionSet", "setCompressionType"),
+                        new StateMachineTransition("compressionSet", "compressionSet", "write", "tilingSet(this)", null)),
+                List.of(new StateMachineInitialTransition("startCompression"),
+                        new StateMachineInitialTransition("startCompression"))), sms.get(1));
+        // parse keeps returning the first state set
+        assertEquals(sms.get(0), StateMachineParser.parse(uri("TwoStateSets.java")));
+        assertEquals(List.of(), StateMachineParser.parseAll(uri("TwoStateClasses.java"), "fsm.Missing"));
+    }
+
+    @Test
     public void testVerifierStatesAreStatesOfTheDiagram() {
-        for (String directory : List.of("errors/door", "errors/tree", "errors/udp")) {
+        for (String directory : List.of("errors/door", "errors/tree", "errors/udp", "errors/image")) {
             List<StateRefinementError> errors = stateErrors(directory);
             assertFalse(errors.isEmpty(), "Expected state refinement errors in " + directory);
             for (StateRefinementError error : errors) {
                 StateErrorContext context = error.getContext();
                 assertNotNull(context, "Expected the verifier's states for " + error.getMessage());
-                StateMachine sm = StateMachineParser.parse(error.getDeclarationPosition().getFile().toURI().toString(),
-                        context.receiverClass());
-                assertNotNull(sm, "Expected a diagram of " + context.receiverClass());
+                List<StateMachine> sms = StateMachineParser.parseAll(
+                        error.getDeclarationPosition().getFile().toURI().toString(), context.receiverClass());
+                assertFalse(sms.isEmpty(), "Expected a diagram of " + context.receiverClass());
                 List<List<String>> verifierStates = new ArrayList<>(context.possibleStates());
                 if (context.acceptedStates() != null)
                     verifierStates.addAll(context.acceptedStates());
-                // the diagram shows the first state set
-                for (List<String> state : verifierStates)
-                    assertTrue(sm.states().contains(state.get(0)), state.get(0) + " is not in " + sm.states());
+                // the verifier names a state in each state set in the same order as the diagrams
+                for (StateMachine sm : sms)
+                    for (List<String> state : verifierStates)
+                        assertTrue(sm.states().contains(state.get(sm.stateSet())),
+                                state.get(sm.stateSet()) + " is not in " + sm.states());
             }
         }
     }
@@ -298,6 +338,7 @@ public class StateMachineParserTests {
     private static void assertStateMachineEquals(StateMachine expected, StateMachine actual) {
         assertNotNull(actual, "State machine should not be null");
         assertEquals(expected.className(), actual.className(), "Class names should match");
+        assertEquals(expected.stateSet(), actual.stateSet(), "State sets should match");
         assertEquals(expected.initialTransitions(), actual.initialTransitions().stream()
                 .map(transition -> new StateMachineInitialTransition(transition.to(), transition.toCondition()))
                 .toList(), "Initial transitions should match");
@@ -307,8 +348,13 @@ public class StateMachineParserTests {
 
     private static StateMachine stateMachine(String className, List<String> states,
             List<StateMachineTransition> transitions, List<StateMachineInitialTransition> initialTransitions) {
+        return stateMachine(className, 0, states, transitions, initialTransitions);
+    }
+
+    private static StateMachine stateMachine(String className, int stateSet, List<String> states,
+            List<StateMachineTransition> transitions, List<StateMachineInitialTransition> initialTransitions) {
         String qualifiedName = className.contains(".") ? className : "fsm." + className;
-        return new StateMachine(qualifiedName, states, transitions, initialTransitions);
+        return new StateMachine(qualifiedName, stateSet, states, transitions, initialTransitions);
     }
 
     private static List<StateRefinementError> stateErrors(String directory) {
