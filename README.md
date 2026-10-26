@@ -46,6 +46,32 @@ A state machine only has the transitions that mention its states. States of othe
 conditions, and in a `to` they are left out, since they change at the same time.
 `parse` returns the state machine of the first state set.
 
+The verifier uses the first `@StateRefinement` of a method whose `from` matches the current state. A `@StateRefinement`
+without `from` therefore only goes from the states that the earlier ones do not cover. When it sits beside
+`@StateRefinement`s with `from`, it is also an entry transition in `entryTransitions`: how an object whose state is
+unknown (a field, a parameter or the result of a getter) enters the protocol, drawn as an arrow from the initial pseudo
+state. For example, `canUndo` below moves an object in an unknown state to `endDone` when it returns `true`, but keeps
+the state it was in otherwise:
+
+```java
+@StateRefinement(from="start(this)", to="!return && start(this)")
+@StateRefinement(from="canEdit(this)")
+@StateRefinement(from="endDone(this)")
+@StateRefinement(from="endUndone(this)", to="!return && endUndone(this)")
+@StateRefinement(to="return ? endDone(this) : true")
+boolean canUndo();
+```
+
+```json
+"entryTransitions": [
+  {
+    "to": "endDone",
+    "label": "canUndo",
+    "toCondition": "return"
+  }
+]
+```
+
 ### JSON Output
 
 ```json
@@ -77,7 +103,8 @@ conditions, and in a `to` they are left out, since they change at the same time.
       "to": "open",
       "toCondition": null
     }
-  ]
+  ],
+  "entryTransitions": []
 }
 ```
 
