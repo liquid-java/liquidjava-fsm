@@ -123,11 +123,12 @@ public class StateMachineParser {
         }
         initialTransitions = new ArrayList<>(initialTransitions);
         initialTransitions.addAll(factoryTransitions);
-        List<StateMachineTransition> transitions = getTransitions(ctType, simpleClassName, states, otherStates);
-        if (transitions.isEmpty())
+        List<StateMachineEntryTransition> entryTransitions = new ArrayList<>();
+        List<StateMachineTransition> transitions = getTransitions(ctType, simpleClassName, states, otherStates, entryTransitions);
+        if (transitions.isEmpty() && entryTransitions.isEmpty())
             return null; // no transitions found
 
-        return new StateMachine(qualifiedName, stateSet, states, transitions, initialTransitions);
+        return new StateMachine(qualifiedName, stateSet, states, transitions, initialTransitions, entryTransitions);
     }
 
     /**
@@ -277,18 +278,23 @@ public class StateMachineParser {
      * @param className the class name
      * @param states the list of states
      * @param otherStates the states of the other state sets
+     * @param entryTransitions the list where the entry transitions are added
      * @return list of StateMachineTransition
      */
     private static List<StateMachineTransition> getTransitions(CtType<?> ctType, String className, List<String> states,
-            List<String> otherStates) {
+            List<String> otherStates, List<StateMachineEntryTransition> entryTransitions) {
         List<StateMachineTransition> transitions = new ArrayList<>();
         for (CtMethod<?> method : ctType.getMethods()) {
             // for interfaces we skip constructor methods (methods with same name as class)
             if (ctType.isInterface() && method.getSimpleName().equals(className))
                 continue;
+            // the verifier uses the first StateRefinement whose from matches, so the states that an earlier from
+            // always matches are not reached by the later ones
+            List<String> coveredStates = new ArrayList<>();
             for (CtAnnotation<?> annotation : method.getAnnotations()) {
                 if (annotation.getAnnotationType().getSimpleName().equals(STATE_REFINEMENT_ANNOTATION)) {
-                    transitions.addAll(getTransitions(annotation, method.getSimpleName(), states, otherStates));
+                    transitions.addAll(getTransitions(annotation, method.getSimpleName(), states, otherStates,
+                            coveredStates, entryTransitions));
                 }
             }
         }
@@ -297,14 +303,18 @@ public class StateMachineParser {
 
     /**
      * Gets transitions from the given annotation
+     * A StateRefinement without from goes from every state that an earlier StateRefinement of the method does not
+     * cover, and when some are covered it is also an entry transition for objects in an unknown state
      * @param ann the CtAnnotation
      * @param method the method name
      * @param states the list of states
      * @param otherStates the states of the other state sets
+     * @param coveredStates the states covered by the earlier StateRefinements of the method, updated with this one
+     * @param entryTransitions the list where the entry transitions are added
      * @return list of StateMachineTransition
      */
     private static List<StateMachineTransition> getTransitions(CtAnnotation<?> ann, String method, List<String> states,
-            List<String> otherStates) {
+            List<String> otherStates, List<String> coveredStates, List<StateMachineEntryTransition> entryTransitions) {
         List<StateMachineTransition> transitions = new ArrayList<>();
         String from = ann.getValueAsString("from");
         String to = ann.getValueAsString("to");
@@ -315,10 +325,24 @@ public class StateMachineParser {
             return transitions;
 
         // parse from and to expressions, the states of the other state sets in from are kept as conditions
-        List<TransitionSource> fromSources = from.isEmpty() ? allStateSources(states) : parsePrecondition(from, states);
+        List<TransitionSource> fromSources;
+        if (from.isEmpty()) {
+            fromSources = allStateSources(states).stream()
+                    .filter(source -> !coveredStates.contains(source.from())).toList();
+        } else {
+            fromSources = parsePrecondition(from, states);
+            fromSources.stream().filter(source -> source.cond() == null).map(TransitionSource::from)
+                    .forEach(coveredStates::add);
+        }
         List<TransitionSource> toSources = fromMentionsStates && !toMentionsStates
                 ? parseStateSources(from, states)
                 : parsePostcondition(to, states, otherStates);
+
+        if (from.isEmpty() && !coveredStates.isEmpty()) {
+            for (TransitionSource toSource : toSources) {
+                entryTransitions.add(new StateMachineEntryTransition(toSource.from(), method, toSource.cond()));
+            }
+        }
 
         // create transitions for each combination of from and to states
         for (TransitionSource fromSource : fromSources) {

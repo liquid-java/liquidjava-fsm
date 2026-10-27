@@ -80,6 +80,36 @@ public class StateMachineParserTests {
     }
 
     @Test
+    public void testEntryTransition() {
+        // no from beside alternatives with from => entry transition, and edges only from the states they do not cover
+        StateMachine sm = StateMachineParser.parse(uri("EntryTransition.java"));
+        StateMachine expectedSm = stateMachine("EntryTransition", List.of("start", "canEdit", "endDone", "endUndone"),
+                List.of(new StateMachineTransition("start", "canEdit", "addEdit"),
+                        new StateMachineTransition("canEdit", "canEdit", "addEdit"),
+                        new StateMachineTransition("start", "start", "canUndo", null, "!return"),
+                        new StateMachineTransition("canEdit", "canEdit", "canUndo"),
+                        new StateMachineTransition("endDone", "endDone", "canUndo"),
+                        new StateMachineTransition("endUndone", "endUndone", "canUndo", null, "!return"),
+                        new StateMachineTransition("endDone", "endDone", "reset"),
+                        new StateMachineTransition("start", "start", "reset"),
+                        new StateMachineTransition("canEdit", "start", "reset"),
+                        new StateMachineTransition("endUndone", "start", "reset"),
+                        new StateMachineTransition("endDone", "endUndone", "undo")),
+                List.of(new StateMachineInitialTransition("start")));
+        assertStateMachineEquals(expectedSm, sm);
+        assertEquals(List.of(new StateMachineEntryTransition("endDone", "canUndo", "return"),
+                        new StateMachineEntryTransition("start", "reset")),
+                sm.entryTransitions());
+    }
+
+    @Test
+    public void testToOnlyTransitionHasNoEntryTransition() {
+        // no from without alternatives goes from every state, also in a known state
+        StateMachine sm = StateMachineParser.parse(uri("ToOnlyTransition.java"));
+        assertEquals(List.of(), sm.entryTransitions());
+    }
+
+    @Test
     public void testMultipleInitialStates() {
         // overloading constructors with different initial states
         StateMachine sm = StateMachineParser.parse(uri("MultipleInitialStates.java"));

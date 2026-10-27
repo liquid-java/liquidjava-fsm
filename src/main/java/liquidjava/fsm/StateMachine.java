@@ -12,8 +12,14 @@ public record StateMachine(
     int stateSet,
     List<String> states,
     List<StateMachineTransition> transitions,
-    List<StateMachineInitialTransition> initialTransitions
+    List<StateMachineInitialTransition> initialTransitions,
+    List<StateMachineEntryTransition> entryTransitions
 ) {
+    public StateMachine(String className, int stateSet, List<String> states, List<StateMachineTransition> transitions,
+            List<StateMachineInitialTransition> initialTransitions) {
+        this(className, stateSet, states, transitions, initialTransitions, List.of());
+    }
+
     public StateMachine(String className, List<String> states, List<StateMachineTransition> transitions,
             List<StateMachineInitialTransition> initialTransitions) {
         this(className, 0, states, transitions, initialTransitions);
