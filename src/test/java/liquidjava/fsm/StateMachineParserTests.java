@@ -372,6 +372,24 @@ public class StateMachineParserTests {
     }
 
     @Test
+    public void testMethodsInheritedFromASpecWithoutStateSet() {
+        StateMachine sm = StateMachineParser.parseAll(List.of(uri("inherited/JFrameRefinements.java"),
+                uri("inherited/FrameRefinements.java"), uri("inherited/WindowRefinements.java")), "javax.swing.JFrame")
+                .get(0);
+        assertEquals(List.of("setDefaultCloseOperation", "setUndecorated", "dispose", "pack"),
+                sm.transitions().stream().map(StateMachineTransition::label).distinct().toList());
+        assertEquals(List.of(new StateMachineInitialTransition("notDisplayable", null, "new JFrame(String)")),
+                sm.initialTransitions());
+    }
+
+    @Test
+    public void testMissingFileDoesNotDiscardTheOthers() {
+        List<StateMachine> sms = StateMachineParser.parseAll(List.of(uri("inherited/FrameRefinements.java"),
+                uri("inherited/WindowRefinements.java"), uri("inherited/Missing.java")), "java.awt.Frame");
+        assertEquals(List.of(FRAME.transitions()), sms.stream().map(StateMachine::transitions).toList());
+    }
+
+    @Test
     public void testOverriddenAndPackagePrivateInheritedMethods() {
         // the child's next replaces its parent's, and inPackage cannot be called by every caller
         StateMachine sm = StateMachineParser.parse(uri("InheritedOverride.java"), "fsm.InheritedOverrideChild");

@@ -2,6 +2,8 @@ package liquidjava.fsm;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -116,12 +118,15 @@ public class StateMachineParser {
         }
     }
 
+    // a file that no longer exists is skipped, so that it does not discard the specs in the others
     private static CtModel buildModel(List<String> uris) throws URISyntaxException {
         Launcher launcher = new Launcher();
         launcher.getEnvironment().setNoClasspath(true);
         launcher.getEnvironment().setAutoImports(true);
         for (String uri : uris.stream().distinct().toList()) {
-            launcher.addInputResource(Paths.get(new URI(uri)).toString());
+            Path path = Paths.get(new URI(uri));
+            if (Files.isRegularFile(path))
+                launcher.addInputResource(path.toString());
         }
         launcher.buildModel();
         return launcher.getModel();
