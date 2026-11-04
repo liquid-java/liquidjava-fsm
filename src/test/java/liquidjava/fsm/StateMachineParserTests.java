@@ -342,6 +342,64 @@ public class StateMachineParserTests {
         assertEquals(List.of(), StateMachineParser.parseAll(uri("TwoStateClasses.java"), "fsm.Missing"));
     }
 
+    private static final StateMachine FRAME = new StateMachine("java.awt.Frame", 0,
+            List.of("displayable", "notDisplayable"),
+            List.of(new StateMachineTransition("notDisplayable", "notDisplayable", "setUndecorated"),
+                    new StateMachineTransition("displayable", "notDisplayable", "dispose"),
+                    new StateMachineTransition("notDisplayable", "notDisplayable", "dispose"),
+                    new StateMachineTransition("displayable", "displayable", "pack"),
+                    new StateMachineTransition("notDisplayable", "displayable", "pack")),
+            List.of(new StateMachineInitialTransition("notDisplayable")));
+
+    @Test
+    public void testStateSetAndMethodsInheritedFromTheSuperclassSpec() {
+        // addNotify is left out: Frame redeclares it, so a call on a Frame does not use the Window spec's refinement
+        List<StateMachine> sms = StateMachineParser.parseAll(uri("InheritedStateSet.java"), "java.awt.Frame");
+        assertEquals(1, sms.size());
+        assertStateMachineEquals(FRAME, sms.get(0));
+        assertTrue(StateMachineParser.parse(uri("InheritedStateSet.java"), "java.awt.Window").transitions().stream()
+                .anyMatch(transition -> transition.label().equals("addNotify")));
+    }
+
+    @Test
+    public void testSpecsInheritedFromOtherFiles() {
+        List<StateMachine> sms = StateMachineParser.parseAll(
+                List.of(uri("inherited/FrameRefinements.java"), uri("inherited/WindowRefinements.java")),
+                "java.awt.Frame");
+        assertEquals(1, sms.size());
+        assertStateMachineEquals(FRAME, sms.get(0));
+        assertEquals(List.of(), StateMachineParser.parseAll(uri("inherited/FrameRefinements.java"), "java.awt.Frame"));
+    }
+
+    @Test
+    public void testMethodsInheritedFromASpecWithoutStateSet() {
+        StateMachine sm = StateMachineParser.parseAll(List.of(uri("inherited/JFrameRefinements.java"),
+                uri("inherited/FrameRefinements.java"), uri("inherited/WindowRefinements.java")), "javax.swing.JFrame")
+                .get(0);
+        assertEquals(List.of("setDefaultCloseOperation", "setUndecorated", "dispose", "pack"),
+                sm.transitions().stream().map(StateMachineTransition::label).distinct().toList());
+        assertEquals(List.of(new StateMachineInitialTransition("notDisplayable", null, "new JFrame(String)")),
+                sm.initialTransitions());
+    }
+
+    @Test
+    public void testMissingFileDoesNotDiscardTheOthers() {
+        List<StateMachine> sms = StateMachineParser.parseAll(List.of(uri("inherited/FrameRefinements.java"),
+                uri("inherited/WindowRefinements.java"), uri("inherited/Missing.java")), "java.awt.Frame");
+        assertEquals(List.of(FRAME.transitions()), sms.stream().map(StateMachine::transitions).toList());
+    }
+
+    @Test
+    public void testOverriddenAndPackagePrivateInheritedMethods() {
+        // the child's next replaces its parent's, and inPackage cannot be called by every caller
+        StateMachine sm = StateMachineParser.parse(uri("InheritedOverride.java"), "fsm.InheritedOverrideChild");
+        assertStateMachineEquals(stateMachine("InheritedOverrideChild", List.of("a", "b", "c"),
+                List.of(new StateMachineTransition("a", "c", "next"),
+                        new StateMachineTransition("b", "a", "reset"),
+                        new StateMachineTransition("c", "c", "useC")),
+                List.of(new StateMachineInitialTransition("a"))), sm);
+    }
+
     @Test
     public void testVerifierStatesAreStatesOfTheDiagram() {
         for (String directory : List.of("errors/door", "errors/tree", "errors/udp", "errors/image")) {

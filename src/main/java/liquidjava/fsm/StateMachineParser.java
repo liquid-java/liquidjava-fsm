@@ -1,10 +1,18 @@
 package liquidjava.fsm;
 
 import java.net.URI;
+import java.net.URISyntaxException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Deque;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Stream;
 
 import liquidjava.rj_language.ast.*;
 import liquidjava.rj_language.parsing.RefinementsParser;
@@ -16,6 +24,7 @@ import spoon.reflect.declaration.CtClass;
 import spoon.reflect.declaration.CtExecutable;
 import spoon.reflect.declaration.CtMethod;
 import spoon.reflect.declaration.CtType;
+import spoon.reflect.reference.CtTypeReference;
 
 public class StateMachineParser {
 
@@ -63,22 +72,32 @@ public class StateMachineParser {
      * @return the state machines of the state sets with transitions, in declaration order
      */
     public static List<StateMachine> parseAll(String uri, String className) {
+        return parseAll(List.of(uri), className);
+    }
+
+    /**
+     * Parses the class or interface with the given name in the given uris, with the state sets and methods it inherits
+     * from the specs of its supertypes in them, and extracts one state machine per state set
+     * As in the verifier, the state sets of the class come first, then those of its supertypes, nearest first, and a
+     * call uses the class's own refinement of a method, otherwise that of the nearest type that declares the method
+     * @param uris the document URIs
+     * @param className the qualified class name, or the name given by ExternalRefinementsFor
+     * @return the state machines of the state sets with transitions, in declaration order
+     */
+    public static List<StateMachine> parseAll(List<String> uris, String className) {
         try {
-            String filePath = Paths.get(new URI(uri)).toString();
-            Launcher launcher = new Launcher();
-            launcher.getEnvironment().setNoClasspath(true);
-            launcher.getEnvironment().setAutoImports(true);
-            launcher.addInputResource(filePath);
-            launcher.buildModel();
-            CtModel model = launcher.getModel();
+            CtModel model = buildModel(uris);
 
             // get class or interface
             CtType<?> ctType = getType(model, className);
             if (ctType == null)
                 return List.of(); // no class or interface found
 
-            // extract class name and state sets
-            List<List<String>> stateSets = getStateSets(ctType);
+            // extract class name, state sets and methods, with those inherited from the specs of the supertypes
+            List<CtTypeReference<?>> supertypes = getSupertypes(model, ctType);
+            List<CtType<?>> specs = getSpecs(model, ctType, supertypes);
+            List<List<String>> stateSets = specs.stream().flatMap(spec -> getStateSets(spec).stream()).toList();
+            List<CtMethod<?>> methods = getMethods(specs, supertypes);
             String qualifiedName = getClassName(ctType);
             List<StateMachine> stateMachines = new ArrayList<>();
             for (int i = 0; i < stateSets.size(); i++) {
@@ -87,7 +106,7 @@ public class StateMachineParser {
                     if (j != i)
                         otherStates.addAll(stateSets.get(j));
                 }
-                StateMachine sm = parseStateSet(ctType, qualifiedName, i, stateSets.get(i), otherStates);
+                StateMachine sm = parseStateSet(ctType, methods, qualifiedName, i, stateSets.get(i), otherStates);
                 if (sm != null)
                     stateMachines.add(sm);
             }
@@ -99,17 +118,32 @@ public class StateMachineParser {
         }
     }
 
+    // a file that no longer exists is skipped, so that it does not discard the specs in the others
+    private static CtModel buildModel(List<String> uris) throws URISyntaxException {
+        Launcher launcher = new Launcher();
+        launcher.getEnvironment().setNoClasspath(true);
+        launcher.getEnvironment().setAutoImports(true);
+        for (String uri : uris.stream().distinct().toList()) {
+            Path path = Paths.get(new URI(uri));
+            if (Files.isRegularFile(path))
+                launcher.addInputResource(path.toString());
+        }
+        launcher.buildModel();
+        return launcher.getModel();
+    }
+
     /**
      * Extracts the state machine of one state set
      * @param ctType the CtType (class or interface)
+     * @param methods the methods of the class, with those it inherits
      * @param qualifiedName the class name
      * @param stateSet the index of the state set
      * @param states the states of the state set
      * @param otherStates the states of the other state sets
      * @return StateMachine or null if the state set has no transitions
      */
-    private static StateMachine parseStateSet(CtType<?> ctType, String qualifiedName, int stateSet,
-            List<String> states, List<String> otherStates) {
+    private static StateMachine parseStateSet(CtType<?> ctType, List<CtMethod<?>> methods, String qualifiedName,
+            int stateSet, List<String> states, List<String> otherStates) {
         if (states.isEmpty())
             return null; // no states found
         String simpleClassName = Utils.getSimpleName(qualifiedName);
@@ -124,7 +158,7 @@ public class StateMachineParser {
         initialTransitions = new ArrayList<>(initialTransitions);
         initialTransitions.addAll(factoryTransitions);
         List<StateMachineEntryTransition> entryTransitions = new ArrayList<>();
-        List<StateMachineTransition> transitions = getTransitions(ctType, simpleClassName, states, otherStates, entryTransitions);
+        List<StateMachineTransition> transitions = getTransitions(methods, states, otherStates, entryTransitions);
         if (transitions.isEmpty() && entryTransitions.isEmpty())
             return null; // no transitions found
 
@@ -143,6 +177,164 @@ public class StateMachineParser {
                 return type;
         }
         return null;
+    }
+
+    /**
+     * Gets the supertypes of a class whose specs it may inherit, nearest first: its superclasses, then the interfaces
+     * they implement, as in the verifier
+     * @param model the CtModel
+     * @param ctType the CtType (class or interface)
+     * @return the supertypes, or none if the model has no other type with a spec
+     */
+    private static List<CtTypeReference<?>> getSupertypes(CtModel model, CtType<?> ctType) {
+        if (model.getAllTypes().size() == 1)
+            return List.of();
+        CtTypeReference<?> type = getClassReference(ctType);
+        List<CtTypeReference<?>> superclasses = new ArrayList<>();
+        Deque<CtTypeReference<?>> interfaces = new ArrayDeque<>();
+        Set<String> seen = new HashSet<>(Set.of(type.getQualifiedName()));
+        for (CtTypeReference<?> t = type; t != null; t = getSuperclass(t)) {
+            if (t != type && seen.add(t.getQualifiedName()))
+                superclasses.add(t);
+            interfaces.addAll(getSuperInterfaces(t));
+        }
+        List<CtTypeReference<?>> supertypes = new ArrayList<>(superclasses);
+        while (!interfaces.isEmpty()) {
+            CtTypeReference<?> t = interfaces.poll();
+            if (seen.add(t.getQualifiedName())) {
+                supertypes.add(t);
+                interfaces.addAll(getSuperInterfaces(t));
+            }
+        }
+        return supertypes;
+    }
+
+    // a supertype that cannot be resolved (no source, not on the classpath) ends the walk on that branch
+    private static CtTypeReference<?> getSuperclass(CtTypeReference<?> type) {
+        try {
+            return type.getSuperclass();
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private static Set<CtTypeReference<?>> getSuperInterfaces(CtTypeReference<?> type) {
+        try {
+            return type.getSuperInterfaces();
+        } catch (RuntimeException e) {
+            return Set.of();
+        }
+    }
+
+    /**
+     * Gets the reference to the class a class or interface specifies
+     * @param ctType the CtType (class or interface)
+     * @return the reference to the class named by ExternalRefinementsFor, or to the class itself
+     */
+    private static CtTypeReference<?> getClassReference(CtType<?> ctType) {
+        return ctType.getFactory().Type().createReference(getClassName(ctType));
+    }
+
+    /**
+     * Gets the specs of a class and of its supertypes in the model
+     * @param model the CtModel
+     * @param ctType the CtType (class or interface) of the class
+     * @param supertypes the supertypes of the class, nearest first
+     * @return the CtType of the class, followed by those of its supertypes that have one
+     */
+    private static List<CtType<?>> getSpecs(CtModel model, CtType<?> ctType, List<CtTypeReference<?>> supertypes) {
+        List<CtType<?>> specs = new ArrayList<>(List.of(ctType));
+        for (CtTypeReference<?> supertype : supertypes) {
+            CtType<?> spec = getType(model, supertype.getQualifiedName());
+            if (spec != null)
+                specs.add(spec);
+        }
+        return specs;
+    }
+
+    /**
+     * Gets the methods of a class and those it inherits from the specs of its supertypes, as the verifier applies them
+     * An inherited method is left out if a nearer spec refines it, if the nearest type that declares it is not the one
+     * it is specified for, or if not every caller can call it
+     * @param specs the CtType of the class, followed by those of its supertypes
+     * @param supertypes the supertypes of the class, nearest first
+     * @return the methods, without the constructors of interfaces
+     */
+    private static List<CtMethod<?>> getMethods(List<CtType<?>> specs, List<CtTypeReference<?>> supertypes) {
+        CtType<?> ctType = specs.get(0);
+        List<CtTypeReference<?>> hierarchy = new ArrayList<>(List.of(getClassReference(ctType)));
+        hierarchy.addAll(supertypes);
+        List<CtMethod<?>> methods = new ArrayList<>(getDeclaredMethods(ctType));
+        for (CtType<?> spec : specs.subList(1, specs.size())) {
+            for (CtMethod<?> method : getDeclaredMethods(spec)) {
+                if (!isRefinedIn(method, methods) && resolvesTo(method, spec, hierarchy) && isPublic(method, spec))
+                    methods.add(method);
+            }
+        }
+        return methods;
+    }
+
+    /**
+     * Gets the methods of a class or interface, without the methods of interfaces that stand for constructors
+     * @param ctType the CtType (class or interface)
+     * @return the methods
+     */
+    private static List<CtMethod<?>> getDeclaredMethods(CtType<?> ctType) {
+        String className = Utils.getSimpleName(getClassName(ctType));
+        return ctType.getMethods().stream()
+                .filter(method -> !(ctType.isInterface() && method.getSimpleName().equals(className))).toList();
+    }
+
+    private static boolean isRefinedIn(CtMethod<?> method, List<CtMethod<?>> methods) {
+        return methods.stream().anyMatch(m -> m.getSimpleName().equals(method.getSimpleName())
+                && getQualifiedParameterTypes(m).equals(getQualifiedParameterTypes(method)));
+    }
+
+    private static List<String> getQualifiedParameterTypes(CtMethod<?> method) {
+        return method.getParameters().stream()
+                .map(parameter -> parameter.getType() == null ? "" : parameter.getType().getQualifiedName()).toList();
+    }
+
+    /**
+     * Checks whether the nearest type in the hierarchy that declares a method is the one a spec is for, which is where
+     * the verifier looks up the refinement of a call
+     * @param method the method of the spec
+     * @param spec the CtType (class or interface) of the spec
+     * @param hierarchy the class, followed by its supertypes, nearest first
+     * @return whether a call on the class uses the spec's refinement of the method
+     */
+    private static boolean resolvesTo(CtMethod<?> method, CtType<?> spec, List<CtTypeReference<?>> hierarchy) {
+        for (CtTypeReference<?> type : hierarchy) {
+            CtType<?> declaration = type.getTypeDeclaration();
+            if (declaration == null)
+                return false; // cannot tell which type declares it
+            if (getDeclarations(method, declaration).findAny().isPresent())
+                return type.getQualifiedName().equals(getClassName(spec));
+        }
+        return false;
+    }
+
+    /**
+     * Checks whether every caller can call a method on a subtype of the class a spec is for, since the diagram is
+     * shared by every caller
+     * @param method the method of the spec
+     * @param spec the CtType (class or interface) of the spec
+     * @return whether the method is public in the class
+     */
+    private static boolean isPublic(CtMethod<?> method, CtType<?> spec) {
+        CtType<?> declaring = getClassReference(spec).getTypeDeclaration();
+        if (declaring == null)
+            return false; // cannot tell whether it is public
+        // interface methods are public unless declared private
+        return getDeclarations(method, declaring).allMatch(m -> declaring.isInterface() ? !m.isPrivate() : m.isPublic());
+    }
+
+    /**
+     * Gets the methods of a type that a method of a spec may refer to: those with its name and number of parameters
+     */
+    private static Stream<CtMethod<?>> getDeclarations(CtMethod<?> method, CtType<?> type) {
+        return type.getMethods().stream().filter(m -> m.getSimpleName().equals(method.getSimpleName())
+                && m.getParameters().size() == method.getParameters().size());
     }
 
     /**
@@ -273,21 +465,17 @@ public class StateMachineParser {
     }
 
     /**
-     * Gets transitions from a class or interface
-     * @param ctType the CtType (class or interface)
-     * @param className the class name
+     * Gets transitions from the methods of a class or interface
+     * @param methods the methods, without the constructors of interfaces
      * @param states the list of states
      * @param otherStates the states of the other state sets
      * @param entryTransitions the list where the entry transitions are added
      * @return list of StateMachineTransition
      */
-    private static List<StateMachineTransition> getTransitions(CtType<?> ctType, String className, List<String> states,
+    private static List<StateMachineTransition> getTransitions(List<CtMethod<?>> methods, List<String> states,
             List<String> otherStates, List<StateMachineEntryTransition> entryTransitions) {
         List<StateMachineTransition> transitions = new ArrayList<>();
-        for (CtMethod<?> method : ctType.getMethods()) {
-            // for interfaces we skip constructor methods (methods with same name as class)
-            if (ctType.isInterface() && method.getSimpleName().equals(className))
-                continue;
+        for (CtMethod<?> method : methods) {
             // the verifier uses the first StateRefinement whose from matches, so the states that an earlier from
             // always matches are not reached by the later ones
             List<String> coveredStates = new ArrayList<>();

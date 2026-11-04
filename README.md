@@ -38,7 +38,15 @@ StateMachine stateMachine = StateMachineParser.parse(path.toUri().toString());
 StateMachine named = StateMachineParser.parse(path.toUri().toString(), "example.File");
 // one state machine per @StateSet, in declaration order
 List<StateMachine> stateMachines = StateMachineParser.parseAll(path.toUri().toString());
+// with the state sets and methods java.awt.Frame inherits from the specs of its supertypes in these files
+List<StateMachine> inherited = StateMachineParser.parseAll(List.of(frameSpec, windowSpec), "java.awt.Frame");
 ```
+
+A class inherits the state sets and methods of the specs of its supertypes in the parsed files, as in the verifier.
+Its own state sets come first, then those of its supertypes, nearest first. A call uses the class's own refinement of a
+method, otherwise that of the nearest type that declares the method, so an inherited refinement is left out when a
+nearer spec refines the method, when a nearer type redeclares it, or when not every caller can call it. Constructors are
+the class's own.
 
 A class with several `@StateSet` annotations has one state machine per state set, since each changes independently.
 `stateSet` is the index of the state set, the same order the verifier uses in `StateErrorContext`.
