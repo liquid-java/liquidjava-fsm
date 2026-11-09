@@ -19,6 +19,7 @@ import liquidjava.rj_language.parsing.RefinementsParser;
 import liquidjava.utils.Utils;
 import spoon.Launcher;
 import spoon.reflect.CtModel;
+import spoon.reflect.code.CtLiteral;
 import spoon.reflect.declaration.CtAnnotation;
 import spoon.reflect.declaration.CtClass;
 import spoon.reflect.declaration.CtExecutable;
@@ -34,6 +35,9 @@ public class StateMachineParser {
     private static final String EXTERNAL_REFINEMENTS_FOR_ANNOTATION = "ExternalRefinementsFor";
 
     private record TransitionSource(String from, String cond) {}
+
+    // name is null when the state set has none
+    private record StateSet(String name, List<String> states) {}
 
     /**
      * Parses a class or interface for the given uri and extracts the state machine information
@@ -96,7 +100,7 @@ public class StateMachineParser {
             // extract class name, state sets and methods, with those inherited from the specs of the supertypes
             List<CtTypeReference<?>> supertypes = getSupertypes(model, ctType);
             List<CtType<?>> specs = getSpecs(model, ctType, supertypes);
-            List<List<String>> stateSets = specs.stream().flatMap(spec -> getStateSets(spec).stream()).toList();
+            List<StateSet> stateSets = specs.stream().flatMap(spec -> getStateSets(spec).stream()).toList();
             List<CtMethod<?>> methods = getMethods(specs, supertypes);
             String qualifiedName = getClassName(ctType);
             List<StateMachine> stateMachines = new ArrayList<>();
@@ -104,7 +108,7 @@ public class StateMachineParser {
                 List<String> otherStates = new ArrayList<>();
                 for (int j = 0; j < stateSets.size(); j++) {
                     if (j != i)
-                        otherStates.addAll(stateSets.get(j));
+                        otherStates.addAll(stateSets.get(j).states());
                 }
                 StateMachine sm = parseStateSet(ctType, methods, qualifiedName, i, stateSets.get(i), otherStates);
                 if (sm != null)
@@ -138,12 +142,13 @@ public class StateMachineParser {
      * @param methods the methods of the class, with those it inherits
      * @param qualifiedName the class name
      * @param stateSet the index of the state set
-     * @param states the states of the state set
+     * @param set the state set
      * @param otherStates the states of the other state sets
      * @return StateMachine or null if the state set has no transitions
      */
     private static StateMachine parseStateSet(CtType<?> ctType, List<CtMethod<?>> methods, String qualifiedName,
-            int stateSet, List<String> states, List<String> otherStates) {
+            int stateSet, StateSet set, List<String> otherStates) {
+        List<String> states = set.states();
         if (states.isEmpty())
             return null; // no states found
         String simpleClassName = Utils.getSimpleName(qualifiedName);
@@ -162,7 +167,8 @@ public class StateMachineParser {
         if (transitions.isEmpty() && entryTransitions.isEmpty())
             return null; // no transitions found
 
-        return new StateMachine(qualifiedName, stateSet, states, transitions, initialTransitions, entryTransitions);
+        return new StateMachine(qualifiedName, stateSet, set.name(), states, transitions, initialTransitions,
+                entryTransitions);
     }
 
     /**
@@ -358,15 +364,21 @@ public class StateMachineParser {
      * @param ctType the CtType (class or interface)
      * @return list of state sets, in declaration order
      */
-    private static List<List<String>> getStateSets(CtType<?> ctType) {
-        List<List<String>> stateSets = new ArrayList<>();
+    private static List<StateSet> getStateSets(CtType<?> ctType) {
+        List<StateSet> stateSets = new ArrayList<>();
         for (CtAnnotation<?> annotation : ctType.getAnnotations()) {
             if (annotation.getAnnotationType().getSimpleName().equals(STATE_SET_ANNOTATION)) {
                 String[] stateArray = (String[]) annotation.getValueAsObject("value");
-                stateSets.add(List.of(stateArray));
+                stateSets.add(new StateSet(getStateSetName(annotation), List.of(stateArray)));
             }
         }
         return stateSets;
+    }
+
+    // an empty name is no name, as in the verifier
+    private static String getStateSetName(CtAnnotation<?> annotation) {
+        return annotation.getValues().get("name") instanceof CtLiteral<?> literal
+                && literal.getValue() instanceof String name && !name.isEmpty() ? name : null;
     }
 
     /**
@@ -600,25 +612,23 @@ public class StateMachineParser {
             return List.of(new TransitionSource(state, null));
         }
 
+        List<String> negatedStates = getNegatedStates(expr, states);
+        if (!negatedStates.isEmpty()) {
+            List<TransitionSource> sources = new ArrayList<>();
+            for (String possibleState : states) {
+                if (!negatedStates.contains(possibleState)) {
+                    sources.add(new TransitionSource(possibleState, null));
+                }
+            }
+            return sources;
+        }
+
         if (expr instanceof BinaryExpression bin) {
             String op = bin.getOperator();
             if (op.equals("&&")) {
                 return getConjunctionSources(bin, states, stateOnlyDisjunctions);
             } else if (op.equals("||")) {
                 return stateOnlyDisjunctions ? getStateSources(bin, states) : getDisjunctionSources(bin, states);
-            }
-        } else if (expr instanceof UnaryExpression unary) {
-            if (unary.getOp().equals("!")) {
-                List<String> negatedStates = getStateExpressions(unary.getExpression(), states);
-                if (!negatedStates.isEmpty()) {
-                    List<TransitionSource> sources = new ArrayList<>();
-                    for (String possibleState : states) {
-                        if (!negatedStates.contains(possibleState)) {
-                            sources.add(new TransitionSource(possibleState, null));
-                        }
-                    }
-                    return sources;
-                }
             }
         } else if (expr instanceof Ite ite) {
             List<TransitionSource> sources = new ArrayList<>();
@@ -740,23 +750,19 @@ public class StateMachineParser {
     private static List<String> getStateExpressions(Expression expr, List<String> states) {
         List<String> stateExpressions = new ArrayList<>();
         String state = getStateName(expr, states);
+        List<String> negatedStates = getNegatedStates(expr, states);
         if (state != null) {
             stateExpressions.add(state);
+        } else if (!negatedStates.isEmpty()) {
+            // all except those in the expression
+            for (String possibleState : states) {
+                if (!negatedStates.contains(possibleState)) {
+                    stateExpressions.add(possibleState);
+                }
+            }
         } else if (expr instanceof BinaryExpression bin) {
             stateExpressions.addAll(getStateExpressions(bin.getFirstOperand(), states));
             stateExpressions.addAll(getStateExpressions(bin.getSecondOperand(), states));
-        } else if (expr instanceof UnaryExpression unary) {
-            if (unary.getOp().equals("!")) {
-                // all except those in the expression
-                List<String> negatedStates = getStateExpressions(unary.getExpression(), states);
-                if (!negatedStates.isEmpty()) {
-                    for (String possibleState : states) {
-                        if (!negatedStates.contains(possibleState)) {
-                            stateExpressions.add(possibleState);
-                        }
-                    }
-                }
-            }
         } else if (expr instanceof Ite ite) {
             // combine states from then and else branches
             stateExpressions.addAll(getStateExpressions(ite.getThen(), states));
@@ -765,13 +771,41 @@ public class StateMachineParser {
         return stateExpressions;
     }
 
+    /**
+     * Gets the state an expression is in: open(this), or open written as a value of its state set, as in
+     * phase(this) == open or open == phase(this), which the verifier reads as open(this)
+     */
     private static String getStateName(Expression expr, List<String> states) {
         if (expr instanceof Var var) {
             return findState(var.getName(), states);
         } else if (expr instanceof FunctionInvocation func) {
             return findState(func.getName(), states);
+        } else if (expr instanceof BinaryExpression bin && bin.getOperator().equals("==")) {
+            String state = getStateValue(bin.getFirstOperand(), bin.getSecondOperand(), states);
+            return state != null ? state : getStateValue(bin.getSecondOperand(), bin.getFirstOperand(), states);
         }
         return null;
+    }
+
+    private static String getStateValue(Expression stateSet, Expression value, List<String> states) {
+        return stateSet instanceof FunctionInvocation func && func.getArgs().size() == 1 && value instanceof Var var
+                ? findState(var.getName(), states)
+                : null;
+    }
+
+    /**
+     * Gets the states a negation excludes: those in e for !e, or open for phase(this) != open, which the verifier
+     * reads as !open(this)
+     * @return the excluded states, or none if expr is not the negation of a state
+     */
+    private static List<String> getNegatedStates(Expression expr, List<String> states) {
+        if (expr instanceof UnaryExpression unary && unary.getOp().equals("!")) {
+            return getStateExpressions(unary.getExpression(), states);
+        } else if (expr instanceof BinaryExpression bin && bin.getOperator().equals("!=")) {
+            String state = getStateName(new BinaryExpression(bin.getFirstOperand(), "==", bin.getSecondOperand()), states);
+            return state == null ? List.of() : List.of(state);
+        }
+        return List.of();
     }
 
     private static String findState(String name, List<String> states) {

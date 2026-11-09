@@ -53,6 +53,9 @@ A class with several `@StateSet` annotations has one state machine per state set
 A state machine only has the transitions that mention its states. States of other state sets in a `from` are kept as
 conditions, and in a `to` they are left out, since they change at the same time.
 `parse` returns the state machine of the first state set.
+`stateSetName` is the name given to the state set, `@StateSet(name = "phase", value = {...})`, or null if it has none.
+As in the verifier, a state can also be written as a value of its state set, `phase(this) == open` or
+`phase(this) != open`, in either order and mixed with the shorthand `open(this)`.
 
 The verifier uses the first `@StateRefinement` of a method whose `from` matches the current state. A `@StateRefinement`
 without `from` therefore only goes from the states that the earlier ones do not cover. When it sits beside
@@ -86,6 +89,7 @@ boolean canUndo();
 {
   "className": "example.File",
   "stateSet": 0,
+  "stateSetName": null,
   "states": [
     "open",
     "closed"

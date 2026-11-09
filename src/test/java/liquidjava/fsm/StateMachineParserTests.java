@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -340,6 +341,23 @@ public class StateMachineParserTests {
         // parse keeps returning the first state set
         assertEquals(sms.get(0), StateMachineParser.parse(uri("TwoStateSets.java")));
         assertEquals(List.of(), StateMachineParser.parseAll(uri("TwoStateClasses.java"), "fsm.Missing"));
+    }
+
+    @Test
+    public void testStatesWrittenAsValuesOfTheirStateSets() {
+        List<StateMachine> sms = StateMachineParser.parseAll(uri("StateValues.java"));
+        assertEquals(Arrays.asList("phase", null), sms.stream().map(StateMachine::stateSetName).toList());
+        assertStateMachineEquals(stateMachine("StateValues", 0, List.of("open", "closed", "broken"),
+                List.of(new StateMachineTransition("open", "broken", "breakDown", "state2(this) == unlocked", null),
+                        new StateMachineTransition("closed", "broken", "breakDown", "state2(this) == unlocked", null),
+                        new StateMachineTransition("open", "closed", "close"),
+                        new StateMachineTransition("closed", "open", "openLocked")),
+                List.of(new StateMachineInitialTransition("open"))), sms.get(0));
+        assertStateMachineEquals(stateMachine("StateValues", 1, List.of("unlocked", "locked"),
+                List.of(new StateMachineTransition("unlocked", "unlocked", "breakDown", "phase(this) != broken", null),
+                        new StateMachineTransition("unlocked", "locked", "openLocked", "phase(this) == closed", null),
+                        new StateMachineTransition("locked", "locked", "openLocked", "phase(this) == closed", null)),
+                List.of(new StateMachineInitialTransition("unlocked"))), sms.get(1));
     }
 
     private static final StateMachine FRAME = new StateMachine("java.awt.Frame", 0,
