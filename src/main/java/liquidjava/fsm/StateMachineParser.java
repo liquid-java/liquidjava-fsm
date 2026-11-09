@@ -612,18 +612,15 @@ public class StateMachineParser {
             return List.of(new TransitionSource(state, null));
         }
 
-        Expression negated = getNegated(expr);
-        if (negated != null) {
-            List<String> negatedStates = getStateExpressions(negated, states);
-            if (!negatedStates.isEmpty()) {
-                List<TransitionSource> sources = new ArrayList<>();
-                for (String possibleState : states) {
-                    if (!negatedStates.contains(possibleState)) {
-                        sources.add(new TransitionSource(possibleState, null));
-                    }
+        List<String> negatedStates = getNegatedStates(expr, states);
+        if (!negatedStates.isEmpty()) {
+            List<TransitionSource> sources = new ArrayList<>();
+            for (String possibleState : states) {
+                if (!negatedStates.contains(possibleState)) {
+                    sources.add(new TransitionSource(possibleState, null));
                 }
-                return sources;
             }
+            return sources;
         }
 
         if (expr instanceof BinaryExpression bin) {
@@ -753,17 +750,14 @@ public class StateMachineParser {
     private static List<String> getStateExpressions(Expression expr, List<String> states) {
         List<String> stateExpressions = new ArrayList<>();
         String state = getStateName(expr, states);
-        Expression negated = getNegated(expr);
+        List<String> negatedStates = getNegatedStates(expr, states);
         if (state != null) {
             stateExpressions.add(state);
-        } else if (negated != null) {
+        } else if (!negatedStates.isEmpty()) {
             // all except those in the expression
-            List<String> negatedStates = getStateExpressions(negated, states);
-            if (!negatedStates.isEmpty()) {
-                for (String possibleState : states) {
-                    if (!negatedStates.contains(possibleState)) {
-                        stateExpressions.add(possibleState);
-                    }
+            for (String possibleState : states) {
+                if (!negatedStates.contains(possibleState)) {
+                    stateExpressions.add(possibleState);
                 }
             }
         } else if (expr instanceof BinaryExpression bin) {
@@ -800,17 +794,18 @@ public class StateMachineParser {
     }
 
     /**
-     * Gets what a negation negates: e in !e, or a == b in a != b, so that phase(this) != open is read as !open(this)
-     * as in the verifier
-     * @return the negated expression, or null if expr is not a negation
+     * Gets the states a negation excludes: those in e for !e, or open for phase(this) != open, which the verifier
+     * reads as !open(this)
+     * @return the excluded states, or none if expr is not the negation of a state
      */
-    private static Expression getNegated(Expression expr) {
+    private static List<String> getNegatedStates(Expression expr, List<String> states) {
         if (expr instanceof UnaryExpression unary && unary.getOp().equals("!")) {
-            return unary.getExpression();
+            return getStateExpressions(unary.getExpression(), states);
         } else if (expr instanceof BinaryExpression bin && bin.getOperator().equals("!=")) {
-            return new BinaryExpression(bin.getFirstOperand(), "==", bin.getSecondOperand());
+            String state = getStateName(new BinaryExpression(bin.getFirstOperand(), "==", bin.getSecondOperand()), states);
+            return state == null ? List.of() : List.of(state);
         }
-        return null;
+        return List.of();
     }
 
     private static String findState(String name, List<String> states) {
