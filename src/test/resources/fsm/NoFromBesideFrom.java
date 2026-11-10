@@ -4,10 +4,10 @@ import liquidjava.specification.StateRefinement;
 import liquidjava.specification.StateSet;
 
 @StateSet({"start", "canEdit", "endDone", "endUndone"})
-public class EntryTransition {
+public class NoFromBesideFrom {
 
     @StateRefinement(to="start(this)")
-    public EntryTransition() {}
+    public NoFromBesideFrom() {}
 
     @StateRefinement(from="start(this) || canEdit(this)", to="canEdit(this)")
     public void addEdit() {}

@@ -83,8 +83,8 @@ public class StateMachineParserTests {
     @Test
     public void testNoFromBesideFromIsNotEntryTransition() {
         // no from beside alternatives with from => edges only from the states they do not cover, not from the start
-        StateMachine sm = StateMachineParser.parse(uri("EntryTransition.java"));
-        StateMachine expectedSm = stateMachine("EntryTransition", List.of("start", "canEdit", "endDone", "endUndone"),
+        StateMachine sm = StateMachineParser.parse(uri("NoFromBesideFrom.java"));
+        StateMachine expectedSm = stateMachine("NoFromBesideFrom", List.of("start", "canEdit", "endDone", "endUndone"),
                 List.of(new StateMachineTransition("start", "canEdit", "addEdit"),
                         new StateMachineTransition("canEdit", "canEdit", "addEdit"),
                         new StateMachineTransition("start", "start", "canUndo", null, "!return"),
