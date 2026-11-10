@@ -4,10 +4,10 @@ import liquidjava.specification.StateRefinement;
 import liquidjava.specification.StateSet;
 
 @StateSet({"start", "canEdit", "endDone", "endUndone"})
-public class EntryTransition {
+public class NoFromBesideFrom {
 
     @StateRefinement(to="start(this)")
-    public EntryTransition() {}
+    public NoFromBesideFrom() {}
 
     @StateRefinement(from="start(this) || canEdit(this)", to="canEdit(this)")
     public void addEdit() {}
@@ -15,7 +15,7 @@ public class EntryTransition {
     @StateRefinement(from="endDone(this)", to="endUndone(this)")
     public void undo() {}
 
-    // the from alternatives decide in a known state, the last one only for an object in an unknown state
+    // the from alternatives cover every state, so the last one adds no transition
     @StateRefinement(from="start(this)", to="!return && start(this)")
     @StateRefinement(from="canEdit(this)")
     @StateRefinement(from="endDone(this)")
