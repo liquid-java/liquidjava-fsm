@@ -4,7 +4,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>io.github.liquid-java</groupId>
   <artifactId>liquidjava-fsm</artifactId>
-  <version>0.2.2</version>
+  <version>0.2.3</version>
   <name>LiquidJava FSM</name>
   <description>LiquidJava state machine parser</description>
   <url>https://github.com/liquid-java/liquidjava-fsm</url>
@@ -44,7 +44,7 @@
     <dependency>
       <groupId>io.github.liquid-java</groupId>
       <artifactId>liquidjava-verifier</artifactId>
-      <version>0.0.36</version>
+      <version>0.0.37</version>
     </dependency>
     <dependency>
       <groupId>fr.inria.gforge.spoon</groupId>
