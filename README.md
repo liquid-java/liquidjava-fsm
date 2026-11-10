@@ -57,31 +57,19 @@ conditions, and in a `to` they are left out, since they change at the same time.
 As in the verifier, a state can also be written as a value of its state set, `phase(this) == open` or
 `phase(this) != open`, in either order and mixed with the shorthand `open(this)`.
 
-The verifier uses the first `@StateRefinement` of a method whose `from` matches the current state. A `@StateRefinement`
-without `from` therefore only goes from the states that the earlier ones do not cover. When it sits beside
-`@StateRefinement`s with `from`, it is also an entry transition in `entryTransitions`: how an object whose state is
-unknown (a field, a parameter or the result of a getter) enters the protocol, drawn as an arrow from the initial pseudo
-state. For example, `canUndo` below moves an object in an unknown state to `endDone` when it returns `true`, but keeps
-the state it was in otherwise:
+The verifier uses the first `@StateRefinement` of a method whose `from` matches the current state, and reads a
+`@StateRefinement` without `from` as `from = true`: the method can be called in any state and moves to `to`. It therefore
+goes from the states that the earlier ones do not cover, and never from the initial pseudo state, which only
+constructors and factory methods leave. For example, `canRedo` below goes from `notRedoable` to `redoable` when it
+returns `true` and stays in `notRedoable` otherwise, while in `redoable` the first alternative decides:
 
 ```java
-@StateRefinement(from="start(this)", to="!return && start(this)")
-@StateRefinement(from="canEdit(this)")
-@StateRefinement(from="endDone(this)")
-@StateRefinement(from="endUndone(this)", to="!return && endUndone(this)")
-@StateRefinement(to="return ? endDone(this) : true")
-boolean canUndo();
+@StateRefinement(from = "redo(this) == redoable", to = "redo(this) == redoable && return")
+@StateRefinement(to = "return ? redo(this) == redoable : redo(this) == notRedoable")
+boolean canRedo();
 ```
 
-```json
-"entryTransitions": [
-  {
-    "to": "endDone",
-    "label": "canUndo",
-    "toCondition": "return"
-  }
-]
-```
+`entryTransitions` is always empty and only kept so that clients still compile.
 
 ### JSON Output
 

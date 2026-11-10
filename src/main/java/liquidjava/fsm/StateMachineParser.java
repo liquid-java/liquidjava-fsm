@@ -162,13 +162,11 @@ public class StateMachineParser {
         }
         initialTransitions = new ArrayList<>(initialTransitions);
         initialTransitions.addAll(factoryTransitions);
-        List<StateMachineEntryTransition> entryTransitions = new ArrayList<>();
-        List<StateMachineTransition> transitions = getTransitions(methods, states, otherStates, entryTransitions);
-        if (transitions.isEmpty() && entryTransitions.isEmpty())
+        List<StateMachineTransition> transitions = getTransitions(methods, states, otherStates);
+        if (transitions.isEmpty())
             return null; // no transitions found
 
-        return new StateMachine(qualifiedName, stateSet, set.name(), states, transitions, initialTransitions,
-                entryTransitions);
+        return new StateMachine(qualifiedName, stateSet, set.name(), states, transitions, initialTransitions, List.of());
     }
 
     /**
@@ -481,11 +479,10 @@ public class StateMachineParser {
      * @param methods the methods, without the constructors of interfaces
      * @param states the list of states
      * @param otherStates the states of the other state sets
-     * @param entryTransitions the list where the entry transitions are added
      * @return list of StateMachineTransition
      */
     private static List<StateMachineTransition> getTransitions(List<CtMethod<?>> methods, List<String> states,
-            List<String> otherStates, List<StateMachineEntryTransition> entryTransitions) {
+            List<String> otherStates) {
         List<StateMachineTransition> transitions = new ArrayList<>();
         for (CtMethod<?> method : methods) {
             // the verifier uses the first StateRefinement whose from matches, so the states that an earlier from
@@ -494,7 +491,7 @@ public class StateMachineParser {
             for (CtAnnotation<?> annotation : method.getAnnotations()) {
                 if (annotation.getAnnotationType().getSimpleName().equals(STATE_REFINEMENT_ANNOTATION)) {
                     transitions.addAll(getTransitions(annotation, method.getSimpleName(), states, otherStates,
-                            coveredStates, entryTransitions));
+                            coveredStates));
                 }
             }
         }
@@ -504,17 +501,16 @@ public class StateMachineParser {
     /**
      * Gets transitions from the given annotation
      * A StateRefinement without from goes from every state that an earlier StateRefinement of the method does not
-     * cover, and when some are covered it is also an entry transition for objects in an unknown state
+     * cover, as the verifier reads it with from = true; only constructors and factory methods enter the state machine
      * @param ann the CtAnnotation
      * @param method the method name
      * @param states the list of states
      * @param otherStates the states of the other state sets
      * @param coveredStates the states covered by the earlier StateRefinements of the method, updated with this one
-     * @param entryTransitions the list where the entry transitions are added
      * @return list of StateMachineTransition
      */
     private static List<StateMachineTransition> getTransitions(CtAnnotation<?> ann, String method, List<String> states,
-            List<String> otherStates, List<String> coveredStates, List<StateMachineEntryTransition> entryTransitions) {
+            List<String> otherStates, List<String> coveredStates) {
         List<StateMachineTransition> transitions = new ArrayList<>();
         String from = ann.getValueAsString("from");
         String to = ann.getValueAsString("to");
@@ -537,12 +533,6 @@ public class StateMachineParser {
         List<TransitionSource> toSources = fromMentionsStates && !toMentionsStates
                 ? parseStateSources(from, states)
                 : parsePostcondition(to, states, otherStates);
-
-        if (from.isEmpty() && !coveredStates.isEmpty()) {
-            for (TransitionSource toSource : toSources) {
-                entryTransitions.add(new StateMachineEntryTransition(toSource.from(), method, toSource.cond()));
-            }
-        }
 
         // create transitions for each combination of from and to states
         for (TransitionSource fromSource : fromSources) {

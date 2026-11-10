@@ -7,6 +7,7 @@ import java.util.List;
  *
  * @param stateSet the index of the state set among the class's StateSet annotations, in declaration order
  * @param stateSetName the name given to the state set, or null if it has none
+ * @param entryTransitions always empty, see {@link StateMachineEntryTransition}
  */
 public record StateMachine(
     String className,
@@ -15,7 +16,7 @@ public record StateMachine(
     List<String> states,
     List<StateMachineTransition> transitions,
     List<StateMachineInitialTransition> initialTransitions,
-    List<StateMachineEntryTransition> entryTransitions
+    @Deprecated List<StateMachineEntryTransition> entryTransitions
 ) {
     public StateMachine(String className, int stateSet, List<String> states, List<StateMachineTransition> transitions,
             List<StateMachineInitialTransition> initialTransitions, List<StateMachineEntryTransition> entryTransitions) {
